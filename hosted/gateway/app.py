@@ -40,7 +40,13 @@ from hosted.core import policy, quota
 from hosted.gateway import answers, guards, sessions
 from hosted.gateway.config import GatewayConfig
 from hosted.gateway.identity import NotSignedIn
-from hosted.gateway.launch import InMaintenance, Launcher, NotActive, StartFailed
+from hosted.gateway.launch import (
+    DISABLED_MESSAGE,
+    InMaintenance,
+    Launcher,
+    NotActive,
+    StartFailed,
+)
 from hosted.gateway.store import SESSION_TTL_SECONDS
 from hosted.ports.control import ControlStore, Tenant
 from hosted.ports.identity import IdentityVerifier
@@ -152,6 +158,14 @@ def _cacheable(response: web.Response, tag: str) -> web.Response:
 
 CLEAR_SITE_DATA = '"storage"'
 SIGN_IN_REFUSED = "That sign-in did not work. Ask for a new link."
+# Spec 004 B: the chat API every gateway calls, and the container route it
+# becomes. The container's own path, so the forwarder's policy, turn quota and
+# wake-up apply exactly as they do to a turn typed into the dashboard.
+CHAT_API_PATH = "/v1/chat"
+CHAT_STREAM_PATH = "/api/chat/stream"
+CHAT_API_POST_ONLY = "Send the message as a POST."
+# Spec 004 A7: how often a tenant's Waku Memory key is checked for revocation.
+MEMORY_KEY_CHECK_SECONDS = 3600
 
 # aiohttp's own default is 1 MiB. Set explicitly, and equal to the proxy's
 # body cap in the spec's proxy step 1, so hosted waku has ONE body limit
@@ -193,6 +207,8 @@ class Gateway:
                  now: Callable[[], float] = time.time) -> None:
         self._config = config
         self._memory_keys = memory_keys
+        # tenant id -> when its Waku Memory key was last minted or checked (A7).
+        self._key_checked: dict[str, float] = {}
         self._store = store
         self._launcher = launcher
         self._verifier = verifier
@@ -308,6 +324,10 @@ class Gateway:
         host = guards.normalise_host(request.headers.get("Host"))
         if not host:
             return answers.refusal(request, guards.MISDIRECTED, answers.WRONG_HOST)
+        if (host == self._config.apex_host
+                and policy.split_path(request.raw_path)[0] == CHAT_API_PATH):
+            # Before the CSRF pair, on purpose: see _chat_api.
+            return await self._chat_api(request)
         if guards.csrf_refusal(request, host):
             return answers.refusal(request, guards.UNSUPPORTED_MEDIA, answers.NOT_JSON)
         if host == self._config.apex_host:
@@ -432,6 +452,48 @@ class Gateway:
                                     max_age=int(SESSION_TTL_SECONDS))
         return response
 
+    async def _chat_api(self, request: web.Request) -> web.StreamResponse:
+        """`POST /v1/chat`: one person's message to their own Waku Agent (spec 004 B).
+
+        The front door every gateway calls -- the waku.one Waku Agent tab
+        first, Slack later -- server to server, with the person's Supabase
+        token as `Authorization: Bearer`. It finds or creates their tenant,
+        mints their Waku Memory key if they have none, and hands the request
+        to the forwarder as the container's own `/api/chat/stream`, so the
+        turn quota, the wake-up and the header allowlist are the ones every
+        dashboard turn already goes through. The forwarder never passes
+        Authorization on: the container does not see the person's token.
+
+        WHY THE ORIGIN CHECK DOES NOT APPLY. CSRF needs a credential the
+        browser attaches on its own. This route ignores cookies and reads only
+        the Authorization header, which a browser never attaches by itself, so
+        a forged cross-site request arrives with no credential at all. A
+        server-to-server caller sends no Origin, and requiring one would refuse
+        every legitimate call. The JSON half stays.
+        """
+        if request.method != "POST":
+            return answers.json_error(405, CHAT_API_POST_ONLY)
+        if request.content_type != guards.JSON_CONTENT_TYPE:
+            return answers.json_error(guards.UNSUPPORTED_MEDIA, answers.NOT_JSON)
+        values = request.headers.getall("Authorization", ())
+        scheme, _, token = (values[0] if len(values) == 1 else "").partition(" ")
+        if scheme.lower() != "bearer" or not token:
+            return answers.json_error(401, SIGN_IN_REFUSED)
+        try:
+            identity = await asyncio.to_thread(self._verifier.verify, token)
+        except NotSignedIn as exc:
+            _LOG.info("chat api refused: %s", exc)
+            return answers.json_error(401, SIGN_IN_REFUSED)
+        try:
+            tenant, _created = await self._launcher.ensure_tenant(
+                sub=identity.sub, email=identity.email, timezone="")
+        except NotActive as exc:
+            return answers.json_error(403, str(exc))
+        if tenant.status != "active":
+            return answers.json_error(403, DISABLED_MESSAGE)
+        await self._ensure_memory_key(tenant.id, token)
+        return await self._forward(request.clone(rel_url=CHAT_STREAM_PATH), tenant)
+
     async def _ensure_memory_key(self, tenant_id: str, access_token: str) -> None:
         """Mint the tenant's Waku Memory key the first time they sign in (spec 004).
 
@@ -439,19 +501,55 @@ class Gateway:
         already has it. Never fails the sign-in: a person who cannot reach Waku
         Memory today can still use their agent, and the next sign-in tries again.
         """
-        if self._memory_keys is None or self._store.memory_key(tenant_id):
+        if self._memory_keys is None:
             return
+        if self._store.memory_key(tenant_id):
+            await self._check_memory_key(tenant_id, access_token)
+            return
+        await self._mint_memory_key(tenant_id, access_token)
+
+    async def _check_memory_key(self, tenant_id: str, access_token: str) -> None:
+        """Replace the key if the person revoked it on waku.one (spec 004 A7).
+
+        At most once an hour per tenant: a sign-in and every /v1/chat call pass
+        through here, and Waku Memory need not be asked about each one. Only a
+        definite "revoked" replaces the key; an unreachable Waku Memory is not
+        evidence of anything. The running container still holds the old key,
+        so it is stopped, and the next request starts it on the new one.
+        """
+        now = self._now()
+        if now - self._key_checked.get(tenant_id, now) < MEMORY_KEY_CHECK_SECONDS:
+            return
+        self._key_checked[tenant_id] = now
+        try:
+            live = await self._memory_keys.is_live(
+                access_token, self._store.memory_key_id(tenant_id))
+        except Exception as exc:
+            _LOG.info("tenant=%s: Waku Memory key check failed: %s", tenant_id, exc)
+            return
+        if live is not False:
+            return
+        _LOG.info("tenant=%s: Waku Memory key was revoked; minting a new one", tenant_id)
+        if await self._mint_memory_key(tenant_id, access_token):
+            try:
+                await self._launcher.stop(tenant_id)
+            except Exception as exc:
+                _LOG.info("tenant=%s: stop after key replacement failed: %s", tenant_id, exc)
+
+    async def _mint_memory_key(self, tenant_id: str, access_token: str) -> bool:
+        self._key_checked[tenant_id] = self._now()
         try:
             minted = await self._memory_keys.mint(access_token)
         except Exception as exc:  # network, timeout, a malformed answer
             _LOG.info("tenant=%s: Waku Memory key not minted: %s", tenant_id, exc)
-            return
+            return False
         if minted is None:
             _LOG.info("tenant=%s: Waku Memory issued no key", tenant_id)
-            return
+            return False
         key, key_id = minted
         self._store.set_memory_key(tenant_id, key=key, key_id=key_id)
         _LOG.info("tenant=%s: Waku Memory key %s minted", tenant_id, key_id)
+        return True
 
     def _sign_out(self, request: web.Request) -> web.Response:
         value = request.cookies.get(sessions.APEX_COOKIE, "")
