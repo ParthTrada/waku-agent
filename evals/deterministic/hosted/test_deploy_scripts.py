@@ -865,7 +865,11 @@ def test_no_env_file_install_writes_holds_a_value_compose_would_misread(tmp_path
     # off the line, so `${WAKU_DNS_MODULE_VERSION+set}` in upgrade.sh separates
     # "no pin" from "installed before this name existed" -- two things that
     # need two different messages.
-    may_be_empty = {"WAKU_DNS_MODULE_VERSION"}
+    #
+    # WAKU_TREG_TOKEN is the second (spec 004 E): install.sh has no flag for
+    # it, and an empty token is the treg relay switched off. The operator fills
+    # it in by hand (hosted/README.md, "treg in every container").
+    may_be_empty = {"WAKU_DNS_MODULE_VERSION", "WAKU_TREG_TOKEN"}
     for function in ("waku_install_env", "waku_gateway_env",
                      "waku_spawner_env", "waku_proxy_env"):
         for name, raw in _env_body(tmp_path, function).items():

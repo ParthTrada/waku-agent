@@ -98,6 +98,10 @@ EOF
 # 4096: thinking counts as output) and the global concurrency, which spec 001
 # names without a number.
 #
+# WAKU_TREG_TOKEN IS WRITTEN EMPTY (spec 004 E): install.sh has no flag for
+# it, and an empty token is the relay switched off. hosted/README.md, "treg in
+# every container", fills it in by hand later.
+#
 # $platform_key is the only secret any of these three functions prints. It
 # arrives from a file named by --platform-key-file, never from argv, and
 # install.sh pipes this straight into waku_write_config, which creates the
@@ -119,6 +123,8 @@ WAKU_MAX_TOKENS_CEILING=8192
 WAKU_MAX_BODY_BYTES=4194304
 WAKU_UPSTREAM_BASE_URL=https://api.anthropic.com
 WAKU_MEMORY_API_URL=https://api.waku.one
+WAKU_TREG_TOKEN=
+WAKU_TREG_MAX_CALL_USD=0.50
 EOF
 }
 

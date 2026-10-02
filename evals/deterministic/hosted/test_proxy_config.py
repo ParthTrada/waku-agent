@@ -90,3 +90,34 @@ def test_no_price_is_ever_written_as_a_literal_outside_the_table():
     """One table, so a price change is one edit."""
     source = (ROOT / "hosted" / "proxy" / "app.py").read_text() if (ROOT / "hosted" / "proxy" / "app.py").exists() else ""
     assert not re.search(r"\b10\.00\b|\b2\.00\b", source)
+
+
+# --- spec 004 E: treg ------------------------------------------------------------
+
+
+def test_the_example_and_a_fresh_install_leave_the_treg_relay_off():
+    config = config_from_env(_example_env())
+    assert config.treg_token == "" and config.treg_max_call_usd == 0.5
+
+
+def test_a_proxy_env_written_before_treg_still_starts():
+    """upgrade.sh never writes config/, so a deployment installed before spec
+    004 E has neither line. A proxy that refused that file would take the free
+    tier down on the upgrade that added treg."""
+    env = _example_env()
+    del env["WAKU_TREG_TOKEN"], env["WAKU_TREG_MAX_CALL_USD"]
+    config = config_from_env(env)
+    assert config.treg_token == "" and config.treg_max_call_usd == 0.5
+
+
+def test_a_treg_token_and_ceiling_are_read():
+    config = config_from_env(_example_env() | {"WAKU_TREG_TOKEN": "treg_org_x",
+                                               "WAKU_TREG_MAX_CALL_USD": "0.25"})
+    assert config.treg_token == "treg_org_x" and config.treg_max_call_usd == 0.25
+    assert "treg_org_x" not in repr(config)
+
+
+@pytest.mark.parametrize("ceiling", ["0", "-1", "nan", "inf", "11", "fifty cents"])
+def test_a_ceiling_that_is_not_a_price_is_refused_at_startup(ceiling):
+    with pytest.raises(ValueError, match="WAKU_TREG_MAX_CALL_USD"):
+        config_from_env(_example_env() | {"WAKU_TREG_MAX_CALL_USD": ceiling})
