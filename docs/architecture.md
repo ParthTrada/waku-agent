@@ -189,4 +189,6 @@ waku, not a second architecture (conventions.md §3). Spec 001 designed it and
 it runs at agent.waku.one, one container per person. Each container reaches
 that person's Waku Memory on its own: the gateway mints their Waku Memory key
 at their first sign-in, and every start passes it in (spec 004). Every turn
-then sends the facts it keeps to that Waku Memory (spec 006).
+then sends the facts it keeps to that Waku Memory (spec 006). Each can call
+treg through the metering proxy, which holds the platform's treg token and
+charges each call to the person's credits.

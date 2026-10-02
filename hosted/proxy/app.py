@@ -33,9 +33,15 @@ _LOG = log.get(__name__)
 FREE_USED_UP = "Free tier used up. Add your own key in Models."
 SIGN_IN_AGAIN = "This key is not valid. Sign in to Waku again."
 QUEUE_SECONDS = 30.0
+# Where the treg relay answers (spec 004 E). Here rather than in treg.py, which
+# imports this module, so the router can name them.
+RELAY_PATHS = ("/treg/mcp", "/treg/mcp/")
 RATE_WINDOW_SECONDS = 60.0
 
 Resolve = Callable[[str], Awaitable[tuple[str, str] | None]]
+# Spec 004 E: the treg relay's handler (hosted/proxy/treg.py), or None when
+# config/proxy.env carries no treg token and the route does not exist.
+Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 
 
 class Wallet(Protocol):
@@ -43,6 +49,21 @@ class Wallet(Protocol):
 
     async def balance(self, key: str) -> tuple[str, int] | None: ...
     def charge(self, key: str, *, turn_id: str, model: str, usd: float) -> None: ...
+
+
+async def out_of_free_credits(wallet: Wallet | None, key: str) -> bool:
+    """Spec 004 D: one wallet. True for a Free person with no credits left; a
+    Pro person may go negative, as everywhere else in Waku Memory. An
+    unreachable Waku Memory answers False, leaving the other limits in place.
+    Shared by model calls and treg calls (spec 004 E)."""
+    if not key or wallet is None:
+        return False
+    try:
+        balance = await wallet.balance(key)
+    except Exception as exc:
+        _LOG.info("credits balance unavailable: %s", exc)
+        return False
+    return balance is not None and balance[0] == "free" and balance[1] <= 0
 
 
 def _answer(refused: Refused) -> web.Response:
@@ -94,7 +115,7 @@ class MeteringProxy:
                  upstream: Upstream, now: Callable[[], float] = time.time,
                  monotonic: Callable[[], float] = time.monotonic,
                  memory_key: Callable[[str], str] | None = None,
-                 wallet: Wallet | None = None) -> None:
+                 wallet: Wallet | None = None, treg: Handler | None = None) -> None:
         self._config = config
         self._ledger = ledger
         self._resolve = resolve
@@ -103,12 +124,17 @@ class MeteringProxy:
         self._monotonic = monotonic
         self._memory_key = memory_key
         self._wallet = wallet
+        self._treg = treg
         self._in_flight: dict[str, int] = defaultdict(int)
         self._recent: dict[str, deque[float]] = defaultdict(deque)
         self._global = asyncio.Semaphore(config.global_concurrent_calls)
 
     def build(self) -> web.Application:
         app = web.Application(client_max_size=self._config.max_body_bytes)
+        if self._treg is not None:
+            # Before the catch-all, which would answer them 404.
+            for path in RELAY_PATHS:
+                app.router.add_route("*", path, self._treg)
         app.router.add_route("*", "/{tail:.*}", self._dispatch)
         return app
 
@@ -172,14 +198,7 @@ class MeteringProxy:
         refused here, before anything costs anything; a Pro person may go
         negative, as everywhere else in Waku Memory. An unreachable Waku Memory
         leaves the dollar cap as the only limit."""
-        if not key or self._wallet is None:
-            return
-        try:
-            balance = await self._wallet.balance(key)
-        except Exception as exc:
-            _LOG.info("credits balance unavailable: %s", exc)
-            return
-        if balance is not None and balance[0] == "free" and balance[1] <= 0:
+        if await out_of_free_credits(self._wallet, key):
             raise Refused(403, "permission_error", FREE_USED_UP)
 
     def _take_rate(self, tenant: str) -> None:

@@ -245,6 +245,8 @@ class DockerRuntime:
         body = template.task_container(
             config, tenant_id=tenant_id,
             command=["python", "-m", "hosted.spawner.provision_main"],
+            # Spec 004 E: where the treg entry points, only when the relay is on.
+            extra_env=tuple(template.provision_env(config)),
             # NOT KIND_TASK. See template.KIND_PROVISION: labelling the
             # spawner's own bookkeeping as an operator task makes a tenant's
             # start refuse their own retried start with {"code": "busy"}.

@@ -9,7 +9,9 @@ ONE HTTP SITE AND ONE SOCKET:
                             limit (internal.serve_spend).
 
 It asks run/gateway/gateway.sock who a token belongs to, through TokenCache's
-10-second cache, and it is the only process on the VM holding the platform key.
+10-second cache, and it is the only process on the VM holding the platform key
+-- and, when config/proxy.env carries one, the platform's treg token, behind
+the /treg/mcp/ relay on the same site (spec 004 E; hosted/proxy/treg.py).
 
 BEFORE IT SERVES, it settles every reservation a previous run left behind at
 its full amount: the upstream call each was holding may already have been
@@ -33,6 +35,7 @@ from hosted.proxy.config import config_from_env
 from hosted.proxy.gateway_client import TokenCache
 from hosted.proxy.internal import serve_spend
 from hosted.proxy.ledger import Ledger
+from hosted.proxy.treg import TregRelay
 from hosted.proxy.upstream import AnthropicUpstream
 from hosted.proxy.wallet import WakuMemoryWallet
 
@@ -49,16 +52,24 @@ async def main() -> None:
     tokens = TokenCache(config.gateway_socket)
     spend_server = await serve_spend(config.proxy_socket, ledger)
     async with aiohttp.ClientSession(auto_decompress=False) as session:
+        wallet = WakuMemoryWallet(session, config.memory_api_url)
+        treg = None
+        if config.treg_token:
+            treg = TregRelay(session=session, token=config.treg_token,
+                             max_call_usd=config.treg_max_call_usd, resolve=tokens.resolve,
+                             memory_key=tokens.memory_key, wallet=wallet)
         proxy = MeteringProxy(
             config=config, ledger=ledger, resolve=tokens.resolve,
             upstream=AnthropicUpstream(session, config.upstream_base_url, config.platform_key),
-            memory_key=tokens.memory_key,
-            wallet=WakuMemoryWallet(session, config.memory_api_url))
+            memory_key=tokens.memory_key, wallet=wallet,
+            treg=treg.handle if treg is not None else None)
         runner = web.AppRunner(proxy.build(), access_log=None)
         await runner.setup()
         await web.TCPSite(runner, config.bind_host, config.port).start()
         _LOG.info("metering proxy on %s:%s for %s", config.bind_host, config.port,
                   ", ".join(config.free_models))
+        _LOG.info("treg relay %s", f"on, at most ${config.treg_max_call_usd:g} a call"
+                  if treg is not None else "off: config/proxy.env has no WAKU_TREG_TOKEN")
         try:
             await asyncio.Event().wait()
         finally:

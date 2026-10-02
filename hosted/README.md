@@ -399,6 +399,110 @@ gets an answer.
 
 A tenant's own key, once added, is not counted: it is theirs.
 
+## treg in every container
+
+With a treg token in `config/proxy.env`, every tenant's agent can search and
+call treg's catalog (SEO, social, enrichment, scraping, generation) and pays
+for it in waku.one credits (spec 004 E). The token never enters a container:
+a tenant can read its own environment, and the token spends the platform's
+treg balance. So each tenant's `mcp.json` gets a `treg` server pointing at the
+metering proxy, `http://10.88.0.1:8788/treg/mcp/`, authenticated with the
+container's own platform token, and the proxy (`hosted/proxy/treg.py`):
+
+- **finds the tenant** from that token, as it does for model calls. Unknown or
+  disabled is a 401.
+- **refuses who cannot pay.** treg is charged to the person's waku.one credits
+  with their own Waku Memory key, so a tenant with no key yet is refused, and
+  so is a Free person at zero credits. When Waku Memory cannot be reached, the
+  call goes ahead and the two fences below still hold.
+- **forwards to `https://treg.to/mcp/v2/`**, treg's catalog-only surface, with
+  the platform token, `X-Treg-Meta: customer=<tenant id>` and the per-call
+  ceiling. Not `/mcp/`: that surface also calls the treg team's OWN connected
+  accounts with their credentials injected, which no tenant may reach. Only
+  the catalog tools are allowed through; `balance` and `resources_list`,
+  which read the platform team's own account, are refused.
+- **caps each call** at `WAKU_TREG_MAX_CALL_USD` (default $0.50), written into
+  every catalog call as `X-Treg-Route-Max-Cost`. treg answers 402 above it and
+  charges nothing.
+- **charges what treg reports.** Each call's `cost_usd` is charged in credits
+  at the same rate as model calls, under treg's own call id, so a retried
+  report never bills twice. A team's free endpoint carries no cost and charges
+  nothing; treg bills nothing on a 4xx or 5xx, and neither does the proxy.
+
+Off by default: `install.sh` writes `WAKU_TREG_TOKEN=` empty, and a deployment
+installed before spec 004 E has no such line at all. Either way the relay's
+route answers 404, and no container gets a `treg` entry.
+
+### Turning it on
+
+Two files, then an upgrade. `upgrade.sh` never writes `config/`, so the lines
+go in by hand. The token is the treg team's API key (treg dashboard, Getting
+started, Your API key). These lines read it without echoing it, and
+`printf` is a shell builtin, so it never appears in the process list or in
+your shell history:
+
+```bash
+printf 'treg token: '; read -rs treg_token; echo
+[ -n "$treg_token" ] || echo "no token read; run the line above again"
+printf 'WAKU_TREG_TOKEN=%s\nWAKU_TREG_MAX_CALL_USD=0.50\n' "$treg_token" | sudo sh -c '
+  set -e; f=/srv/waku/config/proxy.env; [ -f "$f" ]
+  umask 077; t=$(mktemp "$f.XXXXXX")
+  grep -v -e "^WAKU_TREG_TOKEN=" -e "^WAKU_TREG_MAX_CALL_USD=" "$f" > "$t" || [ $? -eq 1 ]
+  cat >> "$t"; chmod 600 "$t"; mv "$t" "$f"'
+unset treg_token
+sudo sh -c 'f=/srv/waku/config/spawner.env; grep -q "^WAKU_TREG_RELAY=on$" "$f" \
+  || echo WAKU_TREG_RELAY=on >> "$f"'
+sudo /srv/waku/src/hosted/deploy/upgrade.sh --now
+```
+
+The first file is the proxy's: the relay is on once the token is there. The
+second tells the spawner, which cannot read `proxy.env` (it also holds the
+model key), to add `treg` to each tenant's `mcp.json`; the spawner refuses
+`WAKU_TREG_RELAY=on` without the free tier. Running it again replaces the two
+proxy lines rather than adding a second pair. Compose recreates the proxy and
+the spawner when their env files change, and `--now` restarts every running
+tenant, which provisions the new entry. A tenant who already has a `treg`
+server of their own keeps it.
+
+Check it:
+
+```bash
+sudo docker compose --env-file /srv/waku/config/install.env \
+  -f /srv/waku/src/hosted/deploy/compose.yaml --project-name waku \
+  logs proxy | grep 'treg relay'      # "treg relay on, at most $0.5 a call"
+```
+
+Then ask a tenant's agent to find a TikTok profile through treg: the answer
+comes back, and the charge appears in that person's waku.one usage.
+
+**Turning it off** is `WAKU_TREG_TOKEN=` empty and `upgrade.sh`. The relay
+answers 404 at once; the `treg` entries already in tenants' `mcp.json` stay,
+because provisioning only ever adds, and show as a server that cannot connect.
+
+### A second fence: treg's per-customer daily budget
+
+Every call is tagged `customer=<tenant id>`, so treg can cap each tenant per
+day on its own side, whatever the proxy believes about their credits. Set a
+default for every tenant once, from any machine signed in to treg, and
+override one tenant when needed. `<org_id>` is the team's numeric id
+(`treg org ls`), and the token must be an admin's:
+
+```bash
+printf 'treg token: '; read -rs treg_token; echo
+printf 'X-Treg-Token: %s\n' "$treg_token" | curl -sS -X PUT -H @- \
+  -H 'content-type: application/json' -d '{"daily_cap_micro": 1000000}' \
+  "https://treg.to/orgs/<org_id>/budgets/customer"              # $1 a day, every tenant
+printf 'X-Treg-Token: %s\n' "$treg_token" | curl -sS -X PUT -H @- \
+  -H 'content-type: application/json' -d '{"status": "blocked"}' \
+  "https://treg.to/orgs/<org_id>/budgets/customer/<tenant id>"  # cut one tenant off
+unset treg_token
+```
+
+treg calls these caps advisory: concurrent calls can overshoot by about one
+call each. The hard limits are the per-call ceiling and the team's prepaid
+balance. `GET /orgs/<org_id>/usage/by-tag?key=customer&days=30` shows what each
+tenant spent.
+
 ## What is not enabled yet
 
 **No tenant firewall rules.** `deploy/firewall.sh` (task C3) is not in the
