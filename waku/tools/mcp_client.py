@@ -48,7 +48,13 @@ import threading
 from contextlib import AsyncExitStack
 from pathlib import Path
 
+from waku import __version__
 from waku.tools.registry import Tool
+
+# The name every server sees in `initialize`. Waku Memory labels a write's
+# Origin from it (`waku` for any name containing "waku"); a client that sends
+# no name of its own is filed under the SDK's default and shows up as `web`.
+CLIENT_NAME = "waku-agent"
 
 
 def _model_safe_name(server: str, tool: str) -> str:
@@ -124,8 +130,14 @@ class MCPBridge:
         """Connect every configured server and return their tools (as Tools)."""
         self._thread.start()
         servers = json.loads(self.config_path.read_text(encoding="utf-8")).get("servers", [])
+        # Before the coroutine, not as fut.result()'s argument: _deadline is
+        # the first import of the `mcp` package in this thread, and
+        # _connect_one imports it on the loop thread. Two threads importing it
+        # for the first time at once fail with a circular-import ImportError,
+        # which build_registry reports as "the 'mcp' package is missing".
+        deadline = self._deadline(servers)
         fut = asyncio.run_coroutine_threadsafe(self._connect_all(servers), self._loop)
-        listed = fut.result(self._deadline(servers))  # {server: [tool metas]}
+        listed = fut.result(deadline)  # {server: [tool metas]}
         tools: list[Tool] = []
         for srv, metas in listed.items():
             for meta in metas:
@@ -216,11 +228,13 @@ class MCPBridge:
 
     async def _connect_one(self, spec: dict) -> list[dict]:
         """Open one server's session and return its tool metadata."""
-        from mcp import ClientSession
+        from mcp import ClientSession, types
 
         name = spec["name"]
         read, write = await self._open_streams(spec)
-        session = await self._stack.enter_async_context(ClientSession(read, write))
+        info = types.Implementation(name=CLIENT_NAME, version=__version__)
+        session = await self._stack.enter_async_context(
+            ClientSession(read, write, client_info=info))
         await session.initialize()
         self._sessions[name] = session
         tools = (await session.list_tools()).tools
