@@ -246,3 +246,52 @@ def test_provisioning_twice_adds_waku_memory_once(dirs, template):
     provision(dirs, template)
     provision(dirs, template)
     assert _servers(dirs) == [WAKU_MEMORY_SERVER]
+
+
+# --- spec 004 E: treg, through the metering proxy --------------------------------
+
+from hosted.core.provision import ensure_treg, treg_server  # noqa: E402
+
+PROXY = "http://10.88.0.1:8788"
+TREG = {"name": "treg", "url": "http://10.88.0.1:8788/treg/mcp/",
+        "auth_env": "WAKU_PLATFORM_TOKEN"}
+
+
+def test_with_the_relay_on_a_new_tenant_gets_treg_beside_waku_memory(dirs, template):
+    written = provision(dirs, template, treg_base_url=PROXY)
+    assert written.count(dirs.home / "mcp.json") == 1
+    assert _servers(dirs) == [WAKU_MEMORY_SERVER, TREG]
+    assert treg_server(PROXY + "/") == TREG
+
+
+def test_without_the_relay_there_is_no_treg_entry(dirs, template):
+    provision(dirs, template)
+    assert [s["name"] for s in _servers(dirs)] == ["waku_memory"]
+    assert ensure_treg(dirs.home, "") is False
+
+
+def test_an_existing_tenant_gets_treg_on_the_next_start_and_keeps_their_servers(dirs, template):
+    provision(dirs, template)
+    written = provision(dirs, template, treg_base_url=PROXY)
+    assert written == [dirs.home / "mcp.json"]
+    assert _servers(dirs) == [WAKU_MEMORY_SERVER, TREG]
+    provision(dirs, template, treg_base_url=PROXY)
+    assert _servers(dirs) == [WAKU_MEMORY_SERVER, TREG]
+
+
+def test_a_treg_entry_the_tenant_already_has_is_left_alone(dirs, template):
+    dirs.home.mkdir(parents=True)
+    theirs = {"name": "treg", "url": "https://treg.to/mcp/", "oauth": True}
+    (dirs.home / "mcp.json").write_text(json.dumps({"servers": [theirs, WAKU_MEMORY_SERVER]}))
+    written = provision(dirs, template, treg_base_url=PROXY)
+    assert dirs.home / "mcp.json" not in written
+    assert _servers(dirs) == [theirs, WAKU_MEMORY_SERVER]
+
+
+def test_treg_never_follows_a_symlinked_mcp_json(dirs, template, tmp_path):
+    dirs.home.mkdir(parents=True)
+    target = tmp_path / "elsewhere.json"
+    target.write_text(json.dumps({"servers": []}))
+    (dirs.home / "mcp.json").symlink_to(target)
+    assert ensure_treg(dirs.home, PROXY) is False
+    assert json.loads(target.read_text()) == {"servers": []}

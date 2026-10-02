@@ -642,3 +642,83 @@ def test_the_template_refuses_a_malformed_waku_memory_key():
     with pytest.raises(ValueError):
         template.tenant_container(CONFIG, tenant_id=TENANT, project_id=2,
                                   timezone="UTC", token=TOKEN, memory_key="mem_sk_x\nEVIL=1")
+
+
+# --- spec 004 E: treg in every container -----------------------------------------
+
+
+def _spawner_env(**extra) -> dict:
+    env = {name: "x" for name in template.ENV_NAMES}
+    env["WAKU_TENANT_DISK_BYTES"] = "1000000"
+    env["WAKU_SECCOMP_PROFILE"] = str(
+        Path(__file__).resolve().parents[3] / "hosted" / "image" / "seccomp.json")
+    return env | extra
+
+
+FREE_TIER = {"WAKU_PLATFORM_BASE_URL": "http://10.88.0.1:8788",
+             "WAKU_PLATFORM_MODEL": "m", "WAKU_PLATFORM_SMALL_MODEL": "m"}
+
+
+def test_the_treg_relay_is_off_unless_spawner_env_says_on():
+    assert template.config_from_env(_spawner_env(**FREE_TIER)).treg_relay is False
+    on = template.config_from_env(_spawner_env(**FREE_TIER, WAKU_TREG_RELAY="on"))
+    assert on.treg_relay is True
+    assert template.provision_env(on) == ["WAKU_TREG_BASE_URL=http://10.88.0.1:8788"]
+    assert template.provision_env(CONFIG) == []
+
+
+def test_treg_without_the_free_tier_or_with_a_misspelt_value_is_refused():
+    """The relay is a route on the metering proxy, reached with the free
+    tier's platform token: without the free tier there is nothing to point at.
+    And a value other than `on` is a setting the operator believes they made."""
+    with pytest.raises(ValueError, match="needs the free tier"):
+        template.config_from_env(_spawner_env(WAKU_TREG_RELAY="on"))
+    for value in ("yes", "true", "1", "ON"):
+        with pytest.raises(ValueError, match="WAKU_TREG_RELAY"):
+            template.config_from_env(_spawner_env(**FREE_TIER, WAKU_TREG_RELAY=value))
+
+
+def test_spawner_env_example_names_the_treg_switch_commented_out():
+    example = (Path(__file__).resolve().parents[3]
+               / "hosted" / "deploy" / "spawner.env.example").read_text(encoding="utf-8")
+    assert f"#{template.TREG_ENV_NAME}=on" in example
+
+
+def test_only_the_provision_container_is_told_where_treg_is(monkeypatch, tmp_path):
+    """The env reaches the throwaway provision container and nothing else: a
+    tenant container never gets WAKU_TREG_BASE_URL, and the treg token is in
+    no container at all (it is not in spawner.env to begin with)."""
+    import dataclasses
+
+    config = dataclasses.replace(CONFIG, tenant_root=tmp_path / "tenants", treg_relay=True)
+    created: list[dict] = []
+
+    class Engine:
+        async def create(self, name, body):
+            created.append(body)
+            return "id"
+
+        async def start(self, container):
+            return None
+
+        async def wait(self, container):
+            return 0
+
+        async def logs(self, container):
+            return ""
+
+        async def remove(self, container, *, force=True):
+            return None
+
+    async def no_quota(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(docker_mod.xfsquota, "claim", no_quota)
+    monkeypatch.setattr(docker_mod.xfsquota, "set_limit", no_quota)
+    monkeypatch.setattr(docker_mod.os, "chown", lambda *a, **k: None)
+    asyncio.run(docker_mod.DockerRuntime(config, Engine()).provision(TENANT, 2))
+    assert created[0]["Labels"][template.LABEL_KIND] == template.KIND_PROVISION
+    assert "WAKU_TREG_BASE_URL=http://10.88.0.1:8788" in created[0]["Env"]
+    tenant_env = template.tenant_container(config, tenant_id=TENANT, project_id=2,
+                                           timezone="UTC", token=TOKEN)["Env"]
+    assert not [line for line in tenant_env if "TREG" in line]
