@@ -401,3 +401,64 @@ def test_without_remember_nothing_is_marked_unsent(memory):
     add_exchanges(memory.conn, 3)
     assert len(run_with(memory, [response([text_block(DISTILLED)])], None)) == 2
     assert unsynced_contents(memory.conn) == []
+
+
+# ---------- spec 006: research findings, and where they land
+
+RESEARCH = json.dumps({
+    "facts": [{"subject": "Notion AI", "content": "Notion AI launched agents on 2026-09-30."},
+              {"subject": "Descript", "content": "Descript costs $24 a month."}],
+    "episode": "Researched the competitors of muse.ai.",
+    "company_research": True,
+})
+
+
+def test_the_prompt_asks_for_research_findings_and_the_flag():
+    """The prompt asked for facts about the user only, so a research turn's
+    findings about competitors were dropped before anything could keep them."""
+    filled = SUMMARIZER_PROMPT.format(log="user: research muse.ai")
+    for word in ("companies", "products", "markets", "prices", "launches"):
+        assert word in filled
+    assert "subject is the company" in filled
+    assert '"company_research"' in filled
+
+
+def test_company_research_is_remembered_in_the_company_project(memory):
+    from waku.memory.consolidation import COMPANY_PROJECT
+    remember = FakeRemember()
+    add_exchanges(memory.conn, 3)
+    kept = run_with(memory, [response([text_block(RESEARCH)])], remember)
+    assert COMPANY_PROJECT == "Company brain"
+    assert {scope for _, scope in remember.sent} == {"project:Company brain"}
+    assert [k["project"] for k in kept] == ["Company brain", "Company brain"]
+
+
+@pytest.mark.parametrize("flag", [False, "false", None, "yes"])
+def test_anything_but_true_is_remembered_globally(memory, flag):
+    remember = FakeRemember()
+    batch = json.loads(DISTILLED)
+    if flag is not None:
+        batch["company_research"] = flag
+    add_exchanges(memory.conn, 3)
+    kept = run_with(memory, [response([text_block(json.dumps(batch))])], remember)
+    assert {scope for _, scope in remember.sent} == {"global"}
+    assert [k["project"] for k in kept] == [None, None]
+
+
+def test_a_flag_written_as_a_string_still_counts(memory):
+    remember = FakeRemember()
+    batch = {**json.loads(RESEARCH), "company_research": "true"}
+    add_exchanges(memory.conn, 3)
+    run_with(memory, [response([text_block(json.dumps(batch))])], remember)
+    assert {scope for _, scope in remember.sent} == {"project:Company brain"}
+
+
+def test_a_retried_fact_keeps_the_project_it_was_meant_for(memory):
+    remember = FakeRemember(fail=True)
+    add_exchanges(memory.conn, 3)
+    run_with(memory, [response([text_block(RESEARCH)])], remember)
+    remember.fail = False
+    add_exchanges(memory.conn, 3)
+    run_with(memory, [response([text_block('{"facts": [], "episode": ""}')])], remember)
+    assert {scope for _, scope in remember.sent} == {"project:Company brain"}
+    assert len(remember.sent) == 2

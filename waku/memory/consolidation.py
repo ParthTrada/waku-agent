@@ -32,14 +32,25 @@ You distill a personal assistant's recent conversation into long-term memory.
 From the exchanges below, extract:
 1. durable facts about the user, their people, projects, or preferences —
    only things worth remembering in a month; skip chit-chat and one-offs.
-2. one single-sentence episode summarizing what happened in this conversation.
+2. research findings the user looked up or decided on: companies, products,
+   markets, prices, launches. Each is a fact whose subject is the company,
+   product or market it is about.
+3. one single-sentence episode summarizing what happened in this conversation.
+
+Write each fact's content as one sentence that names its subject, so it reads
+on its own. Set "company_research" to true when these exchanges are research
+about a company or market, and false when they are about the user's own life.
 
 Reply with ONLY this JSON:
-{{"facts": [{{"subject": "<who/what>", "content": "<one sentence>"}}], "episode": "<one sentence>"}}
+{{"facts": [{{"subject": "<who/what>", "content": "<one sentence>"}}], "episode": "<one sentence>", "company_research": false}}
 
 Exchanges:
 {log}"""
 
+
+# Spec 006: the Waku Memory project company research is remembered in. The
+# one place the name lives; everything else is remembered in scope "global".
+COMPANY_PROJECT = "Company brain"
 
 log = logging.getLogger(__name__)
 
@@ -129,11 +140,14 @@ def kept_if_due(
     # Spec 005: Jev drops what no later answer would need. Off by default, and
     # it fails open, so without WAKU_SLOT_GATE=jev every proposed fact is kept.
     kept = slot_gate.keep(proposed)
-    scope = "global"
+    # A model may answer the flag as "true"; anything else, or no flag, is personal.
+    research = str(distilled.get("company_research")).lower() == "true"
+    project = COMPANY_PROJECT if research else None
+    scope = f"project:{project}" if project else "global"
     out = []
     for fact in kept:
         record = {"subject": fact["subject"], "content": fact["content"],
-                  "project": None, "memory_id": None}
+                  "project": project, "memory_id": None}
         if tracked:
             fact_id = facts.add_unsynced(fact["subject"], fact["content"], scope)
         else:
