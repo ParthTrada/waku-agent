@@ -107,6 +107,9 @@ That adds Waku Memory to `~/.waku/mcp.json`, next to any servers already there,
 and opens your browser once to sign in. Restart Waku and its tools appear as
 `waku_memory_*`; `waku mcp` shows which account you are signed in as. A config
 still pointing at Waku Memory's old address is moved to the current one.
+From then on, each fact consolidation keeps is also sent to Waku Memory
+(spec 006). Facts kept before you connected stay in `~/.waku/memory/` for the
+importer.
 
 The same memory, in your other agents:
 
