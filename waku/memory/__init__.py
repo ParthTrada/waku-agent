@@ -67,6 +67,9 @@ class Memory:
         self.facts = self._make_fact_store(conn, settings)
         self.episodes = episode_store if episode_store is not None else self._make_episode_store(conn, settings)
         self.skills = SkillLoader([*bundled_skill_dirs(), settings.home / "skills"])
+        # Spec 006: sends each fact consolidation keeps to Waku Memory. app.py
+        # sets it once the MCP servers have connected; None means no send.
+        self.remember = None
 
     @staticmethod
     def _make_fact_store(conn, settings):
@@ -240,6 +243,7 @@ class Memory:
             self.settings.consolidate_every,
             self.facts,
             self.episodes,
+            remember=self.remember,
         )
         if new_facts and notify:
             notify("consolidation", {"new_facts": new_facts})

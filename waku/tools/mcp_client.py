@@ -286,6 +286,10 @@ class MCPBridge:
                     print(_auth_hint(spec, self.config_path.parent / "mcp-auth"))
         return listed
 
+    def connected(self, server: str) -> bool:
+        """Whether `server` has a live session (it connected at start)."""
+        return server in self._sessions
+
     def call(self, server: str, tool: str, args: dict) -> str:
         try:
             fut = asyncio.run_coroutine_threadsafe(self._acall(server, tool, args), self._loop)
