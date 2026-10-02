@@ -67,6 +67,9 @@ class Memory:
         self.facts = self._make_fact_store(conn, settings)
         self.episodes = episode_store if episode_store is not None else self._make_episode_store(conn, settings)
         self.skills = SkillLoader([*bundled_skill_dirs(), settings.home / "skills"])
+        # Spec 006: sends each fact consolidation keeps to Waku Memory. app.py
+        # sets it once the MCP servers have connected; None means no send.
+        self.remember = None
 
     @staticmethod
     def _make_fact_store(conn, settings):
@@ -233,13 +236,17 @@ class Memory:
                 path.unlink()
 
     def maybe_consolidate(self, notify=None) -> None:
-        new_facts = consolidation.consolidate_if_due(
+        kept = consolidation.kept_if_due(
             self.conn,
             self.client,
             self.settings.small_model,
             self.settings.consolidate_every,
             self.facts,
             self.episodes,
+            remember=self.remember,
         )
-        if new_facts and notify:
-            notify("consolidation", {"new_facts": new_facts})
+        # Spec 006: `kept` lists each fact (subject, content, project, and its
+        # Waku Memory id when the send succeeded), so a chat panel can show
+        # what the turn kept and link each one. `new_facts` stays the count.
+        if kept and notify:
+            notify("consolidation", {"new_facts": len(kept), "kept": kept})

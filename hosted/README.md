@@ -309,6 +309,17 @@ sign-in inside the container (spec 004):
    start passes it in as `WAKU_MEMORY_API_KEY`.
 3. Provisioning adds a `waku_memory` server to the tenant's `/data/mcp.json`
    with `"auth_env": "WAKU_MEMORY_API_KEY"`. A tenant's own servers are kept.
+4. Provisioning writes `WAKU_CONSOLIDATE_EVERY=1` into the tenant's `.env`, so
+   every turn ends with consolidation, and the agent sends each fact it keeps
+   to Waku Memory over that server (spec 006). The client names itself
+   `waku-agent`, which Waku Memory labels as Origin `waku`.
+   Company research goes to the project `Company brain`; everything else goes
+   to scope `global`. A failed send is retried at the next turn.
+
+Provisioning creates `.env` only when it is missing. A tenant provisioned
+before spec 006 keeps the laptop default of 6 exchanges until
+`WAKU_CONSOLIDATE_EVERY=1` is added by hand to their `.env`, which is
+`/work/.env` inside the container.
 
 The key is the person's own: it reaches only their memory, and they can revoke
 it on waku.one under Settings, API keys. At most once an hour, a sign-in or a
