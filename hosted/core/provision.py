@@ -23,13 +23,16 @@ from hosted.core.tenant import TenantDirs
 
 ENV_MODE = 0o600
 
-# The ONLY line provisioning writes. Everything else the tenant's waku needs
+# The ONLY lines provisioning writes. Everything else the tenant's waku needs
 # -- the platform base URL, the platform token and the two model names --
 # comes from the container's environment, which outranks .env and which the
 # tenant cannot change on disk. Writing them here instead would hand the
 # tenant's own dashboard a file it can edit to point the platform token
 # somewhere else.
-TENANT_ENV_LINES = ("WAKU_PROVIDER=waku-platform",)
+#
+# WAKU_CONSOLIDATE_EVERY=1 is spec 006: a hosted turn sends what it learned
+# to the person's Waku Memory at the end of the same turn, not after six.
+TENANT_ENV_LINES = ("WAKU_PROVIDER=waku-platform", "WAKU_CONSOLIDATE_EVERY=1")
 
 
 # The tenant's Waku Memory, reached with their own key (spec 004). The key is

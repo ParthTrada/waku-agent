@@ -13,6 +13,7 @@ from waku.loop.models import get_client
 from waku.ops.tracing import Tracer, compose
 from waku.runtime.session import Session
 from waku.tools import build_registry
+from waku.tools.waku_memory import remember_via
 
 
 class Waku:
@@ -30,6 +31,9 @@ class Waku:
         self.memory = Memory(self.conn, self.settings, self.client)
         self.tools = build_registry(self.conn, self.settings, self.memory)
         self.mcp_bridge = getattr(self.tools, "mcp_bridge", None)
+        # Spec 006: with Waku Memory connected, every fact consolidation keeps
+        # is sent there too. Without it this is None and nothing is sent.
+        self.memory.remember = remember_via(self.mcp_bridge)
         self.session = Session(self.settings, memory=self.memory)
         self.tracer = Tracer(self.settings)
 

@@ -105,6 +105,25 @@ the same pass. That is the layout of Claude Code's memory, which the Waku
 Memory importer already uploads one memory per file. Episodes, `MEMORY.md` and
 `state.db` are never written there (spec 003).
 
+### Kept facts reach Waku Memory
+
+When a `waku_memory` MCP server is connected, `app.py` gives consolidation a
+`remember` callable, and consolidation sends every fact it keeps to Waku Memory
+with `memory.remember` (kind `fact`), right after storing it locally (spec
+006). Waku's MCP client names itself `waku-agent`, which Waku Memory labels
+as Origin `waku`. The summariser also keeps research findings
+(companies, products, markets, prices, launches) and flags a batch that is
+company research. Facts from a flagged batch go to scope
+`project:Company brain`; all other facts go to scope `global`. The
+`consolidation` event lists the kept facts with their Waku Memory ids.
+
+The `facts` table records each pending send with `synced = 0` and the scope.
+A failed send is logged and never fails the turn, and the next consolidation
+sends pending facts before new ones. Rows from before spec 006 count as sent,
+because the capture shim imports that backlog from `memory/<id>.md`. Hosted
+containers consolidate every turn; laptops consolidate every 6 exchanges.
+Without a connected server, nothing is sent.
+
 ## Which file is which
 
 - `waku/gateway/` — how text gets in and out: `cli.py`, `voice.py` (wake word),
@@ -169,6 +188,7 @@ and Hermes are the products; this is the afternoon read that explains them.
 waku, not a second architecture (conventions.md §3). Spec 001 designed it and
 it runs at agent.waku.one, one container per person. Each container reaches
 that person's Waku Memory on its own: the gateway mints their Waku Memory key
-at their first sign-in, and every start passes it in (spec 004). Each can call
+at their first sign-in, and every start passes it in (spec 004). Every turn
+then sends the facts it keeps to that Waku Memory (spec 006). Each can call
 treg through the metering proxy, which holds the platform's treg token and
 charges each call to the person's credits.

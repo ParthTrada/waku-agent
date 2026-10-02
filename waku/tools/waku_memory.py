@@ -4,7 +4,11 @@ The Waku agent's own memory is local. Waku Memory is a hosted MCP server at
 https://api.waku.one/mcp. Claude Code, Codex, Grok Bot and this agent can all
 connect to it, so a fact saved in one can be recalled in another. Waku also
 writes each of its facts to <home>/memory/<id>.md, one file per fact, which
-is the shape the Waku Memory importer reads. Nothing in this module uploads.
+is the shape the Waku Memory importer reads.
+
+Spec 006: once the server is connected, remember_via() gives consolidation a
+callable that sends each fact it keeps with memory.remember. That is the only
+upload, and it goes to the server the person connected, with their sign-in.
 
 `waku connect waku-memory` (or `/connect waku-memory` in the dashboard chat)
 adds the server to WAKU_HOME/mcp.json next to any servers already there, then
@@ -25,6 +29,36 @@ DOCS = "https://www.waku.one/docs"
 # and the README showed it until 2026-09-14, so a config copied from that
 # README is moved to the current address instead of failing like an outage.
 RETIRED_HOSTS = ("d1o2fv4416yi84.cloudfront.net",)
+
+
+def remember_via(bridge):
+    """A remember(body, scope) for consolidation, or None if Waku Memory is
+    not connected. It returns the new memory's id and raises when the send
+    failed: the bridge reports a failure as text, which is not this JSON.
+
+    The server is the one named waku_memory or the one at URL; a person may
+    have added it by hand under another name.
+    """
+    if bridge is None:
+        return None
+    try:
+        servers = json.loads(bridge.config_path.read_text(encoding="utf-8")).get("servers", [])
+    except (OSError, ValueError, AttributeError):
+        return None
+    names = [s.get("name") for s in servers if isinstance(s, dict)
+             and (s.get("name") == NAME or s.get("url", "").rstrip("/") == URL)]
+    server = next((n for n in names if n and bridge.connected(n)), None)
+    if server is None:
+        return None
+
+    def remember(body: str, scope: str) -> str | None:
+        text = bridge.call(server, "memory.remember", {"body": body, "kind": "fact", "scope": scope})
+        try:
+            return json.loads(text)["memory"]["id"]
+        except (ValueError, KeyError, TypeError):
+            raise RuntimeError(text[:200]) from None
+
+    return remember
 
 
 def _has_mcp() -> bool:

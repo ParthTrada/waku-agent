@@ -125,7 +125,8 @@ def chat_stream(message: str, emit) -> None:
         "tools": [{"tool": c["tool"], "args": c["args"], "output": c["output"],
                    "status": _tool_status(c["output"]),
                    "summary": (c["output"] or "").split(". ")[0][:120]} for c in result.tool_calls],
-        "consolidation": {"new_facts": cons["new_facts"]} if cons else None,
+        "consolidation": ({"new_facts": cons["new_facts"], "kept": cons.get("kept", [])}
+                          if cons else None),
         # Spec 005: how many retrieved memories Jev let into the prompt.
         "slot": ({"kept": sum(1 for v in slot["verdicts"] if v["kept"]),
                   "total": len(slot["verdicts"])} if slot else None),
