@@ -6,7 +6,7 @@ that test cannot see, because they are about the file rather than the text:
 the mode `.env` is created at, and what a second provision does to a file that
 is already there.
 
-`.env` holds one non-secret line today. It is also where a BYOK key lands the
+`.env` holds two non-secret lines today. It is also where a BYOK key lands the
 day the free tier stops being the only tier, which is why the mode is pinned
 against the literal 0o600 rather than against provision.ENV_MODE.
 """
@@ -58,6 +58,15 @@ def test_the_three_files_are_written_on_a_first_provision(dirs, template):
     assert written == [dirs.env / ".env", dirs.home / "SOUL.md", dirs.home / "mcp.json"]
     assert (dirs.env / ".env").read_text(encoding="utf-8") == render_env()
     assert (dirs.home / "SOUL.md").read_text(encoding="utf-8") == SOUL_TEMPLATE_TEXT
+
+
+def test_a_hosted_agent_consolidates_every_turn(dirs, template):
+    """Spec 006 D. Laptops keep the default of 6; a one-question demo on the
+    hosted agent would never consolidate, so nothing would reach Waku Memory."""
+    provision(dirs, template)
+    lines = (dirs.env / ".env").read_text(encoding="utf-8").splitlines()
+    assert "WAKU_CONSOLIDATE_EVERY=1" in lines
+    assert "WAKU_PROVIDER=waku-platform" in lines
 
 
 def test_the_env_file_ends_at_0600_under_any_umask(dirs, template, permissive_umask):
