@@ -347,6 +347,34 @@ with `"kind": "done"`. The turn counts against the same hourly quota as a turn
 typed into the dashboard. The container never sees the token. The route ignores
 cookies, so it does not check `Origin`; it still requires a JSON body.
 
+### Chat history
+
+Three more routes take the same bearer token and go through the same steps:
+the token verified, the tenant found or created, the Waku Memory key minted if
+missing, the container woken like a turn, the token never forwarded (spec
+007 D). The history stays in the container's own `chat_log`, one copy; the
+gateway reads it through the dashboard's `/api/session`. None of them counts
+as a turn.
+
+| Route | The container sees | Answers |
+|---|---|---|
+| `GET /v1/conversations` | `GET /api/session?action=list` | `{"ok": true, "current": "<id>", "conversations": [{"id", "title", "last_at", "count"}]}`, newest first |
+| `GET /v1/conversations/<id>` | `GET /api/session?action=history&id=<id>` | `{"ok": true, "session_id": "<id>", "history": [{"role", "content", "meta"}]}`, oldest first |
+| `POST /v1/conversations` | `POST /api/session`, the body as sent | `{"ok": true, "session_id": "<id>", "history": [...]}` |
+
+The POST body is `{"action": "new"}` or `{"action": "switch", "id": "<id>"}`;
+anything else is refused with 400 before it reaches the container. `title` is
+the conversation's first message, `last_at` its newest row in UTC
+(`YYYY-MM-DD HH:MM:SS`), `count` its rows, both sides. `current` is the
+conversation the next `POST /v1/chat` writes to; `new` and `switch` change it.
+An id is letters, digits, `.`, `_`, `:` and `-`; another shape is a 404.
+Refusals are the gateway's own `{"error": "<sentence>"}`, as on `/v1/chat`.
+
+```bash
+curl https://agent.waku.one/v1/conversations \
+  -H "Authorization: Bearer <the person's Supabase access token>"
+```
+
 ## The free tier
 
 With `--free-model` and `--platform-key-file`, every tenant can use Waku
