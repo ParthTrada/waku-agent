@@ -10,6 +10,7 @@ from waku.config import Settings, load_settings
 from waku.db import connect
 from waku.loop.agent import LoopResult, Observer, run_loop
 from waku.loop.models import get_client
+from waku.memory import reports
 from waku.ops.tracing import Tracer, compose
 from waku.runtime.session import Session
 from waku.tools import build_registry
@@ -83,6 +84,16 @@ class Waku:
             if result is None:
                 result = self._run_full_turn(user_message, notify, stream)
 
+            # Spec 007: a reply holding a research report sends the report to
+            # Waku Memory and keeps only its first sentences in the chat. No
+            # Waku Memory, or a failed send, leaves the reply whole.
+            reply, report = reports.save(
+                result.reply, self.memory.remember,
+                lambda r: reports.is_company_research(self.client, self.settings.small_model, r))
+            if report is not None:
+                result.reply = reply
+                notify("report", report)
+
             quick = captured.get("graph_route", {}).get("target") == "quick_reply"
 
             def _status(out: str) -> str:
@@ -105,6 +116,8 @@ class Waku:
                 # graph turn was answered by the small model; say so honestly.
                 "model": self.settings.small_model if quick else self.settings.model,
                 "provider": self.settings.provider,
+                # the card a reopened thread draws in place of the report
+                "report": report,
             }
             self.session.add_exchange(user_message, result.reply, tool_calls=result.tool_calls,
                                       source=source, meta=meta)

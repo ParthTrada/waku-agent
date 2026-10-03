@@ -109,8 +109,8 @@ Memory importer already uploads one memory per file. Episodes, `MEMORY.md` and
 
 When a `waku_memory` MCP server is connected, `app.py` gives consolidation a
 `remember` callable, and consolidation sends every fact it keeps to Waku Memory
-with `memory.remember` (kind `fact`), right after storing it locally (spec
-006). Waku's MCP client names itself `waku-agent`, which Waku Memory labels
+with `memory.remember` (kind `fact`, or `reference` for company research),
+right after storing it locally (spec 006). Waku's MCP client names itself `waku-agent`, which Waku Memory labels
 as Origin `waku`. The summariser also keeps research findings
 (companies, products, markets, prices, launches) and flags a batch that is
 company research. Facts from a flagged batch go to scope
@@ -123,6 +123,23 @@ sends pending facts before new ones. Rows from before spec 006 count as sent,
 because the capture shim imports that backlog from `memory/<id>.md`. Hosted
 containers consolidate every turn; laptops consolidate every 6 exchanges.
 Without a connected server, nothing is sent.
+
+### Research reports reach Waku Memory whole
+
+The bundled `research-report` skill teaches the house language and the
+waku-report v1 format (spec 007): one Markdown document whose first line is
+`<!-- waku-report v1 -->`, with fixed sections and fenced JSON blocks
+(`waku-metrics`, `waku-chart`, `waku-compare`, `waku-timeline`,
+`waku-sources`) that waku.one renders. The format is frozen; a new component
+is a new block name. When a turn's reply has that marker on a line of its
+own, `waku/memory/reports.py` sends the report through the same `remember`
+callable as one `semantic` memory, scope `project:Company brain` for company
+or market research (one small-model question) and `global` otherwise. The
+chat reply becomes the sentences before the marker plus "Report saved", the
+turn emits a `report` event `{title, memory_id, scope, summary}` before
+`done`, and the chat log keeps the short reply with the card in its meta.
+Without Waku Memory, or when the send fails, the reply keeps the whole
+report and there is no event.
 
 ## Which file is which
 
@@ -142,7 +159,8 @@ Without a connected server, nothing is sent.
   `registry.py` decides which are on.
 - `waku/memory/` — semantic (FTS5), episodic and procedural (SKILL.md) memory,
   plus `retrieval_gate.py` (hero 1: does this turn need memory?) and
-  `consolidation.py` (every N exchanges).
+  `consolidation.py` (every N exchanges) and `reports.py` (a research report
+  goes to Waku Memory whole).
 - `waku/ops/` — tracing (JSONL + OTel), the dashboard (localhost:7777),
   `release_gate.py`, and `compare_history.py` (the Compare arena's own JSONL
   scoreboard, never `state.db`).
