@@ -5,6 +5,7 @@
   waku connections           list configured integrations and their health
   waku connect google        sign in to Google Calendar (opens your browser)
   waku connect waku-memory   one memory shared with your other agents (opens your browser)
+  waku connect treg          live data for research, on your own treg account (opens your browser)
   waku mcp                   MCP servers, and which account each knows you as
   waku mcp login <name>      sign in again — as someone else, or after expiry
   waku voice                 talk to it (needs the [voice] extra)

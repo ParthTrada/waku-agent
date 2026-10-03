@@ -47,6 +47,7 @@ POST_ROUTES = {
 # Paths served on GET, either exactly or as a prefix.
 GET_PATHS = {
     "/api/data",
+    "/api/session",
     "/api/models",
     "/api/events",
     "/api/reveal",

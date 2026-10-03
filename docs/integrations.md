@@ -137,6 +137,32 @@ skill calls `create_event`) arrive as instructions without those tools behind
 them. Saving skills into Waku Memory, so a cloud agent like Grok Bot can recall
 them, waits until Waku Memory has a place for skills.
 
+## Live data for research (treg)
+
+[treg](https://treg.to) is an MCP server with thousands of endpoints behind
+it: search results, keyword data, companies and people, social profiles, ad
+libraries, web pages. With it connected, a question like "research the
+competitors of mem0" is answered from live sources rather than the model's
+memory.
+
+```bash
+pip install -e '.[mcp]'
+waku connect treg            # or /connect treg in the dashboard chat
+```
+
+That adds `{"name": "treg", "url": "https://treg.to/mcp/", "oauth": true}` to
+`~/.waku/mcp.json`, next to any servers already there, and opens treg's own
+sign-in page once. Restart Waku and its tools appear as `treg_*`. Running it
+again adds nothing; a server you named `treg` that points somewhere else is
+left alone, and the command says so. On your own machine treg is your own
+account and bills you directly. The **Connections** page shows treg as
+connected, not signed in or not added, with a Connect button that runs the
+same `/connect treg` in the chat.
+
+A hosted Waku Agent on waku.one needs none of this: its container reaches treg
+through the platform's relay, and the calls are charged to its credits
+([hosted/README.md](../hosted/README.md)).
+
 ## Let Jev decide which memories earn a slot
 
 ```bash

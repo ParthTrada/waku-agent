@@ -54,6 +54,7 @@ from waku.ops.catalog import list_models
 from waku.ops.pricing import price_for, usage_summary
 from waku.ops.settings_api import apply_settings, pin_action, settings_info
 from waku.ops.tracing import TraceEncodingError, iter_trace_lines
+from waku.tools import treg
 
 PORT = 7777
 # The frontend lives in its own files (static/index.html + style.css + app.js),
@@ -516,6 +517,9 @@ def collect() -> dict:
         "settings": info,
         "providers": [asdict(view) for view in list_providers()],
         "connections": [asdict(view) for view in list_connections()],
+        # MCP servers that sign in on their own page rather than through an
+        # .env field (spec 007 E). Files only: no browser, no network.
+        "mcp_connections": [treg.card(home)],
         "tools": tools_info(),
         "usage": usage_summary(home),
     }
@@ -746,11 +750,29 @@ def _thread_history(conn, sid: str) -> list[dict]:
              "meta": json.loads(r["meta"]) if r["meta"] else None} for r in rows]
 
 
+def conversation_list(conn) -> list[dict]:
+    """session_list in the shape the front door's GET /v1/conversations
+    answers (spec 007 D): id, title, last_at, count. The title is the first
+    user message with its whitespace folded, so a multi-line opener reads as
+    one line in a list."""
+    return [{"id": s["id"], "title": " ".join(s["title"].split()),
+             "last_at": s["last_at"], "count": s["messages"]}
+            for s in session_list(conn)]
+
+
 def session_action(payload: dict) -> dict:
     """Chat history control: start a new conversation, switch to a past one, or
     read a conversation's history (read-only, for the live inbox). Sessions live
-    in chat_log."""
+    in chat_log. "list" and "history" never touch the agent, which is why
+    they are also served on GET (the hosted front door's two reads)."""
     action = payload.get("action")
+    if action == "list":
+        settings = load_settings()
+        settings.ensure_home()
+        conn = connect(settings.home)
+        live = browser_agent.current()
+        return {"ok": True, "conversations": conversation_list(conn),
+                "current": live.session.session_id if live is not None else dash_session()}
     if action == "history":
         # read-only view of a conversation — never touches the agent, so the
         # dashboard can poll it live (e.g. to show new Telegram messages arrive).
@@ -922,6 +944,18 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/api/data":
             self._send(json.dumps(collect(), default=str).encode(), "application/json")
+        elif self.path == "/api/session" or self.path.startswith("/api/session?"):
+            # The two reads of chat history, for the hosted front door
+            # (spec 007 D): ?action=list, and ?action=history&id=<session>.
+            # The writes (new, switch) stay POST-only.
+            from urllib.parse import parse_qs, urlparse
+
+            q = parse_qs(urlparse(self.path).query)
+            action = (q.get("action", [""])[0] or "").strip()
+            out = (session_action({"action": action, "id": q.get("id", [""])[0]})
+                   if action in ("list", "history")
+                   else {"error": "GET /api/session reads only: action=list or action=history"})
+            self._send(json.dumps(out, default=str).encode(), "application/json")
         elif self.path == "/api/judgment-arena":
             from waku.ops import judgment_arena, judgment_cases  # noqa: PLC0415
             self._send(json.dumps({"suites": judgment_cases.suite_list(),

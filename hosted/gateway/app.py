@@ -29,6 +29,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import html
+import json
+import re
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -49,7 +51,7 @@ from hosted.gateway.launch import (
 )
 from hosted.gateway.store import SESSION_TTL_SECONDS
 from hosted.ports.control import ControlStore, Tenant
-from hosted.ports.identity import IdentityVerifier
+from hosted.ports.identity import Identity, IdentityVerifier
 from hosted.ports.memory import MemoryKeys
 
 _LOG = log.get(__name__)
@@ -164,6 +166,22 @@ SIGN_IN_REFUSED = "That sign-in did not work. Ask for a new link."
 CHAT_API_PATH = "/v1/chat"
 CHAT_STREAM_PATH = "/api/chat/stream"
 CHAT_API_POST_ONLY = "Send the message as a POST."
+# Spec 007 D: chat history over the same front door. Three routes, one
+# container route: the dashboard's own /api/session, which already lists,
+# reads, starts and switches conversations for the chat dock. The two reads go
+# as GET with the action in the query; the two writes go as the POST body the
+# caller sent, after the gateway has read it and checked the action.
+CONVERSATIONS_API_PATH = "/v1/conversations"
+SESSION_PATH = "/api/session"
+CONVERSATION_ACTIONS = ("new", "switch")
+# What a conversation id looks like: the dashboard's s-YYYYMMDD-HHMMSS, a
+# channel's name (terminal, voice, whatsapp), telegram-<chat>. A leading
+# letter or digit, so the dock's "__all__" timeline is not a conversation.
+CONVERSATION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+CONVERSATIONS_METHODS = "Read conversations with GET; start or switch one with a POST."
+CONVERSATION_ACTION_REFUSED = ('Send {"action": "new"} or '
+                               '{"action": "switch", "id": "<conversation id>"}.')
+NO_SUCH_CONVERSATION = "That is not a conversation id."
 # Spec 004 A7: how often a tenant's Waku Memory key is checked for revocation.
 MEMORY_KEY_CHECK_SECONDS = 3600
 
@@ -195,6 +213,26 @@ def _sentence_for(status: int) -> str:
     if status == 400:
         return answers.BAD_REQUEST
     return answers.NOT_FOUND if status == 404 else answers.REFUSED
+
+
+def _conversation_action_refusal(body: bytes) -> web.Response | None:
+    """None when a POST /v1/conversations body is one the container should
+    get, the refusal when it is not. Only the two writes: the reads have their
+    own GET routes, and an action the front door does not name is not passed
+    through to find out what the container makes of it."""
+    try:
+        payload = json.loads(body or b"null")
+    except ValueError:
+        return answers.json_error(guards.UNSUPPORTED_MEDIA, answers.NOT_JSON)
+    if not isinstance(payload, dict):
+        return answers.json_error(guards.UNSUPPORTED_MEDIA, answers.NOT_JSON)
+    action = payload.get("action")
+    if action not in CONVERSATION_ACTIONS:
+        return answers.json_error(400, CONVERSATION_ACTION_REFUSED)
+    if action == "switch" and not (isinstance(payload.get("id"), str)
+                                   and CONVERSATION_ID.fullmatch(payload["id"])):
+        return answers.json_error(400, CONVERSATION_ACTION_REFUSED)
+    return None
 
 
 class Gateway:
@@ -324,10 +362,15 @@ class Gateway:
         host = guards.normalise_host(request.headers.get("Host"))
         if not host:
             return answers.refusal(request, guards.MISDIRECTED, answers.WRONG_HOST)
-        if (host == self._config.apex_host
-                and policy.split_path(request.raw_path)[0] == CHAT_API_PATH):
-            # Before the CSRF pair, on purpose: see _chat_api.
-            return await self._chat_api(request)
+        if host == self._config.apex_host:
+            # Before the CSRF pair, on purpose: see _chat_api. The history
+            # routes are bearer routes on the same terms.
+            path = policy.split_path(request.raw_path)[0]
+            if path == CHAT_API_PATH:
+                return await self._chat_api(request)
+            if (path == CONVERSATIONS_API_PATH
+                    or path.startswith(CONVERSATIONS_API_PATH + "/")):
+                return await self._conversations_api(request, path)
         if guards.csrf_refusal(request, host):
             return answers.refusal(request, guards.UNSUPPORTED_MEDIA, answers.NOT_JSON)
         if host == self._config.apex_host:
@@ -475,6 +518,67 @@ class Gateway:
             return answers.json_error(405, CHAT_API_POST_ONLY)
         if request.content_type != guards.JSON_CONTENT_TYPE:
             return answers.json_error(guards.UNSUPPORTED_MEDIA, answers.NOT_JSON)
+        signed_in = await self._bearer(request)
+        if isinstance(signed_in, web.Response):
+            return signed_in
+        tenant = await self._bearer_tenant(*signed_in)
+        if isinstance(tenant, web.Response):
+            return tenant
+        return await self._forward(request.clone(rel_url=CHAT_STREAM_PATH), tenant)
+
+    async def _conversations_api(self, request: web.Request,
+                                 path: str) -> web.StreamResponse:
+        """Chat history over the front door (spec 007 D).
+
+            GET  /v1/conversations        -> GET  /api/session?action=list
+            GET  /v1/conversations/<id>   -> GET  /api/session?action=history&id=<id>
+            POST /v1/conversations        -> POST /api/session, the body as sent
+
+        Everything /v1/chat does, in the same order and through the same two
+        helpers: the bearer token, the tenant (found or created), the Waku
+        Memory key, then the forwarder, which wakes the container exactly as a
+        turn would. The container keeps the one copy of the history, in its
+        own chat_log; the gateway only checks the person and forwards. The
+        forwarder never passes Authorization on.
+
+        THE POST BODY IS READ HERE, FROM THE CLONE. aiohttp refuses to clone a
+        request whose body has been read, but a clone keeps what IT read: the
+        forwarder's own read() of the same clone answers the same bytes. So
+        the gateway checks the action on the object it then hands over, and
+        the container receives exactly the bytes that were checked.
+        """
+        rest = path[len(CONVERSATIONS_API_PATH):]
+        if rest:
+            conversation = rest[1:]
+            if not CONVERSATION_ID.fullmatch(conversation):
+                return answers.json_error(404, NO_SUCH_CONVERSATION)
+            if request.method != "GET":
+                return answers.json_error(405, CONVERSATIONS_METHODS)
+            target = f"{SESSION_PATH}?action=history&id={conversation}"
+        elif request.method == "GET":
+            target = f"{SESSION_PATH}?action=list"
+        elif request.method == "POST":
+            if request.content_type != guards.JSON_CONTENT_TYPE:
+                return answers.json_error(guards.UNSUPPORTED_MEDIA, answers.NOT_JSON)
+            target = SESSION_PATH
+        else:
+            return answers.json_error(405, CONVERSATIONS_METHODS)
+        signed_in = await self._bearer(request)
+        if isinstance(signed_in, web.Response):
+            return signed_in
+        forwarded = request.clone(rel_url=target)
+        if request.method == "POST":
+            refused = _conversation_action_refusal(await forwarded.read())
+            if refused is not None:
+                return refused
+        tenant = await self._bearer_tenant(*signed_in)
+        if isinstance(tenant, web.Response):
+            return tenant
+        return await self._forward(forwarded, tenant)
+
+    async def _bearer(self, request: web.Request) -> tuple[Identity, str] | web.Response:
+        """The person behind `Authorization: Bearer`, verified exactly as at
+        sign-in, or the 401 every bearer route answers."""
         values = request.headers.getall("Authorization", ())
         scheme, _, token = (values[0] if len(values) == 1 else "").partition(" ")
         if scheme.lower() != "bearer" or not token:
@@ -482,8 +586,13 @@ class Gateway:
         try:
             identity = await asyncio.to_thread(self._verifier.verify, token)
         except NotSignedIn as exc:
-            _LOG.info("chat api refused: %s", exc)
+            _LOG.info("bearer route refused: %s", exc)
             return answers.json_error(401, SIGN_IN_REFUSED)
+        return identity, token
+
+    async def _bearer_tenant(self, identity: Identity, token: str) -> Tenant | web.Response:
+        """Their tenant, found or created, with its Waku Memory key in place,
+        or the 403 a disabled one gets."""
         try:
             tenant, _created = await self._launcher.ensure_tenant(
                 sub=identity.sub, email=identity.email, timezone="")
@@ -492,7 +601,7 @@ class Gateway:
         if tenant.status != "active":
             return answers.json_error(403, DISABLED_MESSAGE)
         await self._ensure_memory_key(tenant.id, token)
-        return await self._forward(request.clone(rel_url=CHAT_STREAM_PATH), tenant)
+        return tenant
 
     async def _ensure_memory_key(self, tenant_id: str, access_token: str) -> None:
         """Mint the tenant's Waku Memory key the first time they sign in (spec 004).

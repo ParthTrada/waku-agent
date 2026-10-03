@@ -209,4 +209,8 @@ that person's Waku Memory on its own: the gateway mints their Waku Memory key
 at their first sign-in, and every start passes it in (spec 004). Every turn
 then sends the facts it keeps to that Waku Memory (spec 006). Each can call
 treg through the metering proxy, which holds the platform's treg token and
-charges each call to the person's credits.
+charges each call to the person's credits. A laptop reaches treg directly on
+the person's own account, once `waku connect treg` has signed them in (spec
+007). waku.one reads a person's chat history through the gateway's
+`/v1/conversations` routes, which forward to the container's own
+`/api/session`; the container keeps the one copy (spec 007).

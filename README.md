@@ -78,6 +78,8 @@ waku skill export --to claude,codex     # carry Waku's skills to Claude Code and
 
 Your browser opens once to sign in. To connect Claude Code, Codex, Hermes or Grok Bot to the
 same memory, see [integrations](docs/integrations.md#share-one-memory-with-your-other-agents-waku-memory).
+For live data when it researches, `waku connect treg` (or `/connect treg`) signs in to your own
+[treg](https://treg.to) account the same way; see [integrations](docs/integrations.md#live-data-for-research-treg).
 
 ## What's inside
 

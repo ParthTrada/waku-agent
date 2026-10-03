@@ -89,6 +89,17 @@ tools.
 To connect Claude Code, Codex, Hermes or Grok Bot to the same memory, see
 [integrations](integrations.md#share-one-memory-with-your-other-agents-waku-memory).
 
+Beside it, [treg](https://treg.to) gives Waku live data when it researches,
+on your own treg account:
+
+```bash
+waku connect treg                       # or /connect treg in the dashboard chat
+```
+
+**Check:** `waku connections` lists treg as connected, and so does the
+**Connections** page. More in
+[integrations](integrations.md#live-data-for-research-treg).
+
 ## Next
 
 - [The tour](tour.md): the dashboard's tabs, things to try, and the loop up close.
