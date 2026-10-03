@@ -16,6 +16,7 @@ wire to every visitor.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,7 +49,49 @@ REQUIRED_ENV_NAMES = (
     # from the file; only this catches a name misspelt in the file.
     "WAKU_FREE_TURNS_PER_HOUR",
     "WAKU_BYOK_TURNS_PER_HOUR",
+    # Spec 008 D: the pages allowed to frame the agent's chat. In
+    # MAY_BE_ABSENT below.
+    "WAKU_EMBED_ORIGINS",
 )
+
+# WRITTEN BY install.sh, PINNED LIKE THE REST, AND STILL ALLOWED TO BE ABSENT,
+# on the proxy's precedent for its treg names (hosted/proxy/config.py).
+# upgrade.sh never writes config/, so a gateway.env written before spec 008
+# has no WAKU_EMBED_ORIGINS line, and a gateway that refused to start without
+# it would take every tenant down on the upgrade that added the embedded chat.
+# Absent or empty, the allowlist is DEFAULT_EMBED_ORIGINS.
+MAY_BE_ABSENT = frozenset({"WAKU_EMBED_ORIGINS"})
+
+# waku.one's three hosts. http://localhost:3000, for developing waku.one's own
+# page against a real gateway, is never in the default: an operator who wants
+# it writes the whole list, that origin included.
+DEFAULT_EMBED_ORIGINS = ("https://www.waku.one", "https://waku.one",
+                         "https://dev.waku.one")
+
+# ONE ORIGIN, AND NOTHING THAT IS NOT AN ORIGIN. Every value lands verbatim in
+# a Content-Security-Policy header and in a postMessage target, so a path, a
+# wildcard, a quote or a semicolon is refused at startup rather than becoming
+# a second directive. https for any host; plain http only for loopback, which
+# is what a developer's own waku.one runs on.
+_EMBED_ORIGIN = re.compile(
+    r"https://[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+(?::[0-9]{1,5})?"
+    r"|http://(?:localhost|127\.0\.0\.1)(?::[0-9]{1,5})?")
+
+
+def embed_origins_from(raw: str | None) -> tuple[str, ...]:
+    """WAKU_EMBED_ORIGINS as a tuple of origins, or the default when it is
+    absent or empty. Separated by spaces, the way a CSP source list is, or by
+    commas; a value that is not one exact origin raises."""
+    values = tuple(v for v in re.split(r"[\s,]+", (raw or "").strip()) if v)
+    if not values:
+        return DEFAULT_EMBED_ORIGINS
+    bad = [v for v in values if not _EMBED_ORIGIN.fullmatch(v)]
+    if bad:
+        raise ValueError(
+            f"WAKU_EMBED_ORIGINS holds {bad}, which are not origins. Write each "
+            "as https://host (or http://localhost:<port>), lowercase, with no "
+            "path, separated by spaces.")
+    return values
 
 
 @dataclass(frozen=True)
@@ -67,10 +110,14 @@ class GatewayConfig:
     supabase_jwks_url: str
     supabase_audience: str
     supabase_publishable_key: str
+    # Defaulted so every place that builds a GatewayConfig by hand -- the
+    # tests, the Docker tier -- gets the documented allowlist without naming it.
+    embed_origins: tuple[str, ...] = DEFAULT_EMBED_ORIGINS
 
 
 def config_from_env(env: Mapping[str, str]) -> GatewayConfig:
-    missing = [name for name in REQUIRED_ENV_NAMES if not env.get(name)]
+    missing = [name for name in REQUIRED_ENV_NAMES
+               if name not in MAY_BE_ABSENT and not env.get(name)]
     if missing:
         raise ValueError(
             f"config/gateway.env is missing {missing}. install.sh writes this "
@@ -90,4 +137,5 @@ def config_from_env(env: Mapping[str, str]) -> GatewayConfig:
         supabase_jwks_url=env["WAKU_SUPABASE_JWKS_URL"],
         supabase_audience=env["WAKU_SUPABASE_AUDIENCE"],
         supabase_publishable_key=env["WAKU_SUPABASE_PUBLISHABLE_KEY"],
+        embed_origins=embed_origins_from(env.get("WAKU_EMBED_ORIGINS")),
     )

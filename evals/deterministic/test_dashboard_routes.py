@@ -53,6 +53,8 @@ GET_PATHS = {
     "/api/reveal",
     "/api/compare/history",
     "/static/",
+    # spec 008: the chat column alone, for waku.one to frame
+    "/embed/chat",
 }
 
 # Streaming endpoints. These are what the dashboard actually uses for chat and

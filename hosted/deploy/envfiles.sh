@@ -26,7 +26,10 @@
 # Reads: root domain max_running supabase_url supabase_audience
 #        supabase_publishable_key
 #
-# The 16 names in hosted/gateway/config.REQUIRED_ENV_NAMES, in its order.
+# The 17 names in hosted/gateway/config.REQUIRED_ENV_NAMES, in its order.
+# WAKU_EMBED_ORIGINS is written with the gateway's own default, so the file
+# says what the gateway is doing; a gateway.env from before spec 008 lacks it
+# and the gateway falls back to the same three (config.MAY_BE_ABSENT).
 waku_gateway_env() {
   cat <<EOF
 WAKU_APEX_HOST=$domain
@@ -45,6 +48,7 @@ WAKU_SUPABASE_AUDIENCE=$supabase_audience
 WAKU_SUPABASE_PUBLISHABLE_KEY=$supabase_publishable_key
 WAKU_FREE_TURNS_PER_HOUR=30
 WAKU_BYOK_TURNS_PER_HOUR=120
+WAKU_EMBED_ORIGINS=https://www.waku.one https://waku.one https://dev.waku.one
 EOF
 }
 

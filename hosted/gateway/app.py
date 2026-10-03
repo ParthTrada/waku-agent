@@ -39,7 +39,7 @@ from aiohttp import web
 
 from hosted import log
 from hosted.core import policy, quota
-from hosted.gateway import answers, guards, sessions
+from hosted.gateway import answers, embed, guards, sessions
 from hosted.gateway.config import GatewayConfig
 from hosted.gateway.identity import NotSignedIn
 from hosted.gateway.launch import (
@@ -254,6 +254,9 @@ class Gateway:
         self._now = now
         self._sessions = sessions.SessionCache(now)
         self._handoffs = sessions.HandoffCodes(now)
+        # Spec 008 C: the embedded chat's one-time codes, a separate set so a
+        # sign-in code cannot be redeemed as an embed code or the other way.
+        self._embed_codes = sessions.HandoffCodes(now, ttl=embed.EMBED_CODE_SECONDS)
         # ONE TurnWindow per process, shared with E3's forwarder, which is
         # built BEFORE the Gateway because the Gateway requires a forwarder.
         # Two windows would mean the forwarder counts turns and `disable`
@@ -286,6 +289,10 @@ class Gateway:
         return self._handoffs
 
     @property
+    def embed_codes(self) -> sessions.HandoffCodes:
+        return self._embed_codes
+
+    @property
     def turns(self) -> quota.TurnWindow:
         return self._turns
 
@@ -310,6 +317,7 @@ class Gateway:
         self._store.delete_sessions(tenant_id)
         self._sessions.forget_tenant(tenant_id)
         self._handoffs.forget_tenant(tenant_id)
+        self._embed_codes.forget_tenant(tenant_id)
 
     def build(self) -> web.Application:
         """One catch-all route, one explicit body cap, and the five security
@@ -368,6 +376,8 @@ class Gateway:
             path = policy.split_path(request.raw_path)[0]
             if path == CHAT_API_PATH:
                 return await self._chat_api(request)
+            if path == embed.EMBED_API_PATH:
+                return await self._embed_api(request)
             if (path == CONVERSATIONS_API_PATH
                     or path.startswith(CONVERSATIONS_API_PATH + "/")):
                 return await self._conversations_api(request, path)
@@ -525,6 +535,38 @@ class Gateway:
         if isinstance(tenant, web.Response):
             return tenant
         return await self._forward(request.clone(rel_url=CHAT_STREAM_PATH), tenant)
+
+    async def _embed_api(self, request: web.Request) -> web.Response:
+        """`POST /v1/embed`: a one-time way into the person's own chat, for
+        waku.one to put in an iframe (spec 008 C).
+
+            -> {"url": "https://<tenant>.<apex>/auth/embed?code=<code>",
+                "expires_at": <unix seconds>}
+
+        Bearer-checked exactly like /v1/chat, through the same two helpers, so
+        the tenant is found or created and its Waku Memory key minted here
+        too. The Supabase token never goes into the URL: a URL lands in
+        history, logs and Referer headers, and a sixty-second, single-use code
+        bound to one tenant is worth nothing once the frame has used it.
+
+        Nothing is started here. The frame's first request does that, through
+        the forwarder, exactly as the first request after a sign-in does.
+        """
+        if request.method != "POST":
+            return answers.json_error(405, embed.EMBED_POST_ONLY)
+        if request.content_type != guards.JSON_CONTENT_TYPE:
+            return answers.json_error(guards.UNSUPPORTED_MEDIA, answers.NOT_JSON)
+        signed_in = await self._bearer(request)
+        if isinstance(signed_in, web.Response):
+            return signed_in
+        tenant = await self._bearer_tenant(*signed_in)
+        if isinstance(tenant, web.Response):
+            return tenant
+        code = self._embed_codes.issue(tenant.id)
+        url = (f"https://{tenant.id}.{self._config.apex_host}"
+               f"{embed.AUTH_PATH}?code={code}")
+        return answers.json_ok({"url": url,
+                                "expires_at": int(self._now() + embed.EMBED_CODE_SECONDS)})
 
     async def _conversations_api(self, request: web.Request,
                                  path: str) -> web.StreamResponse:
@@ -686,6 +728,8 @@ class Gateway:
         path, _query = policy.split_path(request.raw_path)
         if request.method == "GET" and path == "/auth/enter":
             return self._enter(request, label)
+        if request.method == "GET" and path == embed.AUTH_PATH:
+            return self._enter_embed(request, label)
         value = request.cookies.get(sessions.TENANT_COOKIE, "")
         tenant_id = (self._resolve(sessions.tenant_key(label, value))
                      if value else None)
@@ -698,17 +742,86 @@ class Gateway:
                 self.end_sessions(tenant_id)
                 _LOG.info("signed out tenant=%s on its own host", tenant_id)
             return self._signed_out_response(sessions.TENANT_COOKIE)
+        embed_only = False
         if tenant_id != label:
-            # Not signed in here, or signed in as somebody else. The same
-            # answer for both: a session that names another tenant tells the
-            # holder nothing about whether this tenant exists.
-            return self._no_session(request)
+            # Not signed in here, or signed in as somebody else. Either way the
+            # embed cookie is the only other way in, and it opens the chat
+            # alone (spec 008 E). The dashboard's own cookie, when it is
+            # valid, wins: it can already reach everything this one can.
+            tenant_id = self._embed_session(request, label)
+            embed_only = tenant_id is not None
+        if tenant_id != label:
+            # The same answer for no session and somebody else's: a session
+            # that names another tenant tells the holder nothing about whether
+            # this tenant exists.
+            return self._no_session(request, path)
         tenant = self._store.tenant_by_id(tenant_id)
         if tenant is None or tenant.status != "active":
             if tenant is not None:
                 self.end_sessions(tenant.id)
-            return self._no_session(request)
+            return self._no_session(request, path)
+        if embed_only:
+            body = await request.read() if request.method == "POST" else b""
+            refused = embed.route_refusal(request.method, path, body)
+            if refused:
+                _LOG.info("embed session for tenant=%s refused %s %s: %s",
+                          tenant.id, request.method, path, refused)
+                return answers.refusal(request, 403, embed.EMBED_REFUSED)
+        if request.method == "GET" and path == embed.PAGE_PATH:
+            return await self._embed_page(request, tenant)
         return await self._forward(request, tenant)
+
+    def _embed_session(self, request: web.Request, label: str) -> str | None:
+        value = request.cookies.get(embed.EMBED_COOKIE, "")
+        return self._resolve(embed.embed_key(label, value)) if value else None
+
+    async def _embed_page(self, request: web.Request,
+                          tenant: Tenant) -> web.StreamResponse:
+        """GET /embed/chat: the container's page, framable by the allowlist.
+
+        The origins ride on the REQUEST for the forwarder, which sends them to
+        the container as X-Waku-Embed-Origins and marks the container's answer
+        framable before its headers go out -- a streamed response cannot have
+        a header changed after prepare(). A refusal the forwarder writes
+        itself (paused, maintenance, at capacity) comes back unprepared and
+        is marked here, so the frame shows the sentence rather than the
+        browser's own "refused to connect".
+        """
+        request[embed.REQUEST_ORIGINS_KEY] = self._config.embed_origins
+        response = await self._forward(request, tenant)
+        if not response.prepared:
+            answers.allow_framing(response, self._config.embed_origins)
+        return response
+
+    def _enter_embed(self, request: web.Request, label: str) -> web.Response:
+        """The embed's hand-off: a code from /v1/embed becomes an embed session.
+
+        _enter's three checks, with the fetch-metadata rule for a frame (see
+        guards.embed_refusal), and two differences that are the point of it:
+        the cookie is the embed one (12 hours, SameSite=None, Partitioned) and
+        the redirect goes to the chat page, not the dashboard. Every answer,
+        including a refusal, is framable by the allowlist: a refusal is the
+        expired page, which tells waku.one to ask for a new code.
+
+        The same warning as _enter: `?code=` must never reach an access log.
+        """
+        origins = self._config.embed_origins
+        refused = guards.embed_refusal(request)
+        if refused:
+            _LOG.info("embed hand-off on %s refused: %s", label, refused)
+            return embed.expired_page(origins)
+        if not self._embed_codes.redeem(request.query.get("code", ""), label):
+            return embed.expired_page(origins)
+        tenant = self._store.tenant_by_id(label)
+        if tenant is None or tenant.status != "active":
+            return embed.expired_page(origins)
+        value = sessions.new_secret()
+        self._remember(embed.embed_key(label, value), label,
+                       ttl=embed.EMBED_SESSION_SECONDS)
+        response = answers.allow_framing(
+            web.Response(status=302, headers={"Location": embed.PAGE_PATH}), origins)
+        embed.set_embed_cookie(response, value)
+        return answers.harden(response)
 
     def _enter(self, request: web.Request, label: str) -> web.Response:
         """The hand-off: a code from the apex becomes this host's session.
@@ -743,12 +856,18 @@ class Gateway:
                                     max_age=int(SESSION_TTL_SECONDS))
         return response
 
-    def _no_session(self, request: web.Request) -> web.Response:
+    def _no_session(self, request: web.Request, path: str = "") -> web.Response:
+        if request.method == "GET" and path == embed.PAGE_PATH:
+            # Inside a frame the sign-in page is a blank box (it carries
+            # frame-ancestors 'none'), so the chat page says it signed out and
+            # tells waku.one, which asks /v1/embed for a new code.
+            return embed.expired_page(self._config.embed_origins)
         if answers.wants_html(request):
             return answers.redirect(f"https://{self._config.apex_host}/login")
         return answers.json_error(401, answers.NO_SESSION)
 
-    def _remember(self, key: str, tenant_id: str) -> None:
+    def _remember(self, key: str, tenant_id: str, *,
+                  ttl: float = SESSION_TTL_SECONDS) -> None:
         """One writer for a session: the row and the cache, on the SCOPED key.
 
         The row is what survives this process; the cache is what keeps a
@@ -757,7 +876,7 @@ class Gateway:
         one that works only after a restart.
         """
         self._store.create_session(tenant_id=tenant_id, value=key,
-                                   expires_at=self._now() + SESSION_TTL_SECONDS)
+                                   expires_at=self._now() + ttl)
         self._sessions.put(key, tenant_id)
 
     def _resolve(self, key: str) -> str | None:

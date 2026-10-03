@@ -115,8 +115,10 @@ function toggleModelMenu(ev){
       {sub: esc(p.provider), on: p.provider === st.provider && p.model === st.model,
        onclick: `switchTo('${esc(p.provider)}','${esc(p.model)}')`})
   ).join("") : `<div class="menu-empty">No models pinned yet.</div>`;
-  openMenu(ev.currentTarget, uiMenuLabel("Your models") + items + uiMenuSep()
-    + uiMenuItem("Manage models…", {onclick: "location.hash='models';closeMenu()"}));
+  // The embedded chat has no Models page to manage them on (spec 008).
+  const manage = document.body.classList.contains("embed") ? ""
+    : uiMenuSep() + uiMenuItem("Manage models…", {onclick: "location.hash='models';closeMenu()"});
+  openMenu(ev.currentTarget, uiMenuLabel("Your models") + items + manage);
 }
 // Switch BOTH provider and model in one click (a pinned model can be any
 // provider). Same-provider switch keeps the gate model; cross-provider lets the

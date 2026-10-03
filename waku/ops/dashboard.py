@@ -20,8 +20,10 @@ Bound to 127.0.0.1 unless WAKU_DASHBOARD_HOST says otherwise, which warns.
 
 from __future__ import annotations
 
+import html
 import json
 import os
+import re
 import shutil
 import threading
 import time
@@ -760,12 +762,32 @@ def conversation_list(conn) -> list[dict]:
             for s in session_list(conn)]
 
 
+def chat_state() -> dict:
+    """What the chat column draws besides the conversation, and nothing else
+    (spec 008). The embedded chat reads this instead of /api/data, which
+    carries the memory, the traces, the spend and the database: the chat's
+    header needs the conversations for History, the current one to restore,
+    and the model and pinned models for the picker."""
+    settings = load_settings()
+    settings.ensure_home()
+    conn = connect(settings.home)
+    live = browser_agent.current()
+    info = settings_info()
+    return {"ok": True, "sessions": session_list(conn),
+            "current_session": live.session.session_id if live is not None else dash_session(),
+            "settings": {k: info.get(k) for k in
+                         ("provider", "model", "small_model", "pinned", "disabled_providers")}}
+
+
 def session_action(payload: dict) -> dict:
     """Chat history control: start a new conversation, switch to a past one, or
     read a conversation's history (read-only, for the live inbox). Sessions live
-    in chat_log. "list" and "history" never touch the agent, which is why
-    they are also served on GET (the hosted front door's two reads)."""
+    in chat_log. "list", "history" and "state" never touch the agent, which is
+    why they are also served on GET (the hosted front door's two reads, and
+    the embedded chat's header)."""
     action = payload.get("action")
+    if action == "state":
+        return chat_state()
     if action == "list":
         settings = load_settings()
         settings.ensure_home()
@@ -923,6 +945,33 @@ def events_since(cursor):
     return {"events": out, "cursor": len(lines)}
 
 
+# --- the embedded chat (spec 008) ------------------------------------------
+#
+# GET /embed/chat serves the chat column alone (static/embed.html) for
+# waku.one to put in an iframe. The page posts to the page around it only when
+# that page's origin is on this list. Hosted, the gateway sends the list it
+# lets frame the page (X-Waku-Embed-Origins, set by the gateway alone);
+# locally nothing sends it and the default is waku.one's three hosts, the same
+# three the gateway defaults to (hosted/gateway/config.py -- duplicated, not
+# imported: waku/ never imports hosted/).
+EMBED_ORIGINS = ("https://www.waku.one", "https://waku.one", "https://dev.waku.one")
+EMBED_ORIGINS_HEADER = "X-Waku-Embed-Origins"
+_ORIGIN = re.compile(r"https?://[a-z0-9.-]+(?::[0-9]{1,5})?")
+
+
+def embed_origins(header: str | None) -> tuple[str, ...]:
+    """The header's origins, or the default. Anything that is not exactly an
+    origin is dropped: these land in the page and in postMessage's target."""
+    given = tuple(v for v in (header or "").split() if _ORIGIN.fullmatch(v))
+    return given or EMBED_ORIGINS
+
+
+def embed_page(header: str | None) -> bytes:
+    page = (STATIC / "embed.html").read_text(encoding="utf-8")
+    return page.replace("@@EMBED_ORIGINS@@",
+                        html.escape(" ".join(embed_origins(header)))).encode("utf-8")
+
+
 # Content types for /static/. .woff2 is here because the dashboard serves its
 # own fonts (static/design/fonts.css) instead of fetching them.
 STATIC_TYPES = {".css": "text/css", ".js": "text/javascript", ".svg": "image/svg+xml",
@@ -953,8 +1002,8 @@ class Handler(BaseHTTPRequestHandler):
             q = parse_qs(urlparse(self.path).query)
             action = (q.get("action", [""])[0] or "").strip()
             out = (session_action({"action": action, "id": q.get("id", [""])[0]})
-                   if action in ("list", "history")
-                   else {"error": "GET /api/session reads only: action=list or action=history"})
+                   if action in ("list", "history", "state")
+                   else {"error": "GET /api/session reads only: action=list, history or state"})
             self._send(json.dumps(out, default=str).encode(), "application/json")
         elif self.path == "/api/judgment-arena":
             from waku.ops import judgment_arena, judgment_cases  # noqa: PLC0415
@@ -1037,6 +1086,9 @@ class Handler(BaseHTTPRequestHandler):
 
             rel = unquote(parse_qs(urlparse(self.path).query).get("path", [""])[0])
             self._send(json.dumps(reveal_path(rel)).encode(), "application/json")
+        elif self.path == "/embed/chat" or self.path.startswith("/embed/chat?"):
+            self._send(embed_page(self.headers.get(EMBED_ORIGINS_HEADER)),
+                       "text/html; charset=utf-8", no_cache=True)
         elif self.path.startswith("/static/"):
             self._serve_static(self.path)
         else:

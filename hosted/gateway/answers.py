@@ -37,13 +37,40 @@ FRAME_ANCESTORS = "frame-ancestors 'none'"
 # Every one of these is on EVERY response, apex and tenant host alike: the two
 # hosts are same-site, so without nosniff and CORP one tenant's page can embed
 # another person's responses with their cookie attached, and without the two
-# framing headers it can frame their dashboard.
+# framing headers it can frame their dashboard. The embedded chat (spec 008) is
+# the one page that is framed on purpose; see FRAMABLE below.
 SECURITY_HEADERS = {
     "Cache-Control": "no-store",
     "Cross-Origin-Resource-Policy": "same-origin",
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
 }
+
+
+# Spec 008 D: the ONE exception to the two framing headers, and it is opt-in
+# per response. A response marked with this key in its own state (aiohttp's
+# StreamResponse is a mapping for exactly this) keeps the frame-ancestors
+# allowlist allow_framing wrote and gets no X-Frame-Options. Only the embed
+# page and /auth/embed are ever marked; nothing a container sends can mark one,
+# because the mark is on the gateway's own response object, not a header.
+FRAMABLE = web.ResponseKey("waku_framable", bool)
+
+
+def allow_framing(response: web.StreamResponse, origins: tuple[str, ...], *,
+                  policy: str = "") -> web.StreamResponse:
+    """`frame-ancestors <origins>` instead of 'none', and no X-Frame-Options.
+
+    X-Frame-Options has no allowlist form -- ALLOW-FROM was never implemented
+    by Chrome and was dropped by Firefox -- so it cannot be narrowed, only
+    left off; frame-ancestors is what every current browser reads instead.
+    `policy` is the rest of a page's own policy, for a page that has one.
+    """
+    response[FRAMABLE] = True
+    ancestors = "frame-ancestors " + " ".join(origins)
+    response.headers["Content-Security-Policy"] = (
+        f"{policy}; {ancestors}" if policy else ancestors)
+    response.headers.popall("X-Frame-Options", None)
+    return response
 
 
 def harden(response: web.StreamResponse) -> web.StreamResponse:
@@ -70,6 +97,8 @@ def harden(response: web.StreamResponse) -> web.StreamResponse:
         # set the header in the handler, passed its own unit test, and still
         # served `no-store` on the wire, because this loop ran last.
         if name == "Cache-Control" and name in response.headers:
+            continue
+        if name == "X-Frame-Options" and response.get(FRAMABLE):
             continue
         response.headers[name] = value
     if "Content-Security-Policy" not in response.headers:
