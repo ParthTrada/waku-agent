@@ -66,6 +66,7 @@ EXPECTED = {
     "/api/models": "pass",
     "/api/query": "pass",
     "/api/compare/history": "pass",
+    "/embed/chat": "pass",
     # filter: the payload decides
     "/api/providers": "filter",
     "/api/settings": "filter",

@@ -98,7 +98,17 @@ const reveal = (path, label) => uiButton(esc(label), {level: "tertiary", size: "
 // --- memory CRUD (dashboard side). `editing` pauses the 5s rebuild so an
 // in-progress edit isn't wiped (same idea as the animation guard).
 let editing = false;
-async function postJSON(url, body, headers = {}){ return (await fetch(url,{method:"POST",headers:{"Content-Type":"application/json",...headers},body:JSON.stringify(body)})).json(); }
+async function postJSON(url, body, headers = {}){
+  const res = await fetch(url,{method:"POST",headers:{"Content-Type":"application/json",...headers},body:JSON.stringify(body)});
+  noteStatus(res.status);
+  return res.json();
+}
+// Every chat call reports its HTTP status here (the helper above, sendChat and
+// the embedded chat's state read). Nobody listens on the dashboard; the
+// embedded chat (embed.js) listens for 401, an ended session, to tell
+// waku.one.
+const statusWatchers = [];
+function noteStatus(status){ statusWatchers.forEach(w => { try { w(status); } catch(e){} }); }
 
 // --- Shared row atoms.
 //

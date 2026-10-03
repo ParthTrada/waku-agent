@@ -110,6 +110,9 @@ DECISIONS: dict[str, str] = {
     "/api/models": PASS,
     "/api/query": PASS,
     "/api/compare/history": PASS,
+    # spec 008: the chat column alone, for waku.one's iframe. Framing and the
+    # embed session's narrower reach are the gateway's (hosted/gateway/embed.py)
+    "/embed/chat": PASS,
     # filtered: the payload decides
     "/api/providers": FILTER,
     "/api/settings": FILTER,

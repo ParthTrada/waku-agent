@@ -26,7 +26,7 @@ const toolRow = x => `<div class="tool ${x.status||"ok"}">
 function histItem(m){
   if (m.role === "user") return {role:"user", text:m.content};
   if (m.meta) return {role:"waku", reply:m.content, gate:m.meta.gate, slot:m.meta.slot,
-                      graph:m.meta.graph,
+                      graph:m.meta.graph, report:m.meta.report,
                       tools:m.meta.tools, iterations:m.meta.iterations,
                       latency_ms:m.meta.latency_ms, model:m.meta.model};
   return {role:"waku", reply:m.content, historical:true};
@@ -105,6 +105,34 @@ function stagesRow(t, live){
 const teleFooter = t => `<div class="meta tele">${secs(t.latency_ms)} · ${t.iterations??"?"} iter${
   t.model?` · ${esc(t.model)}`:""}${t.consolidation?` · consolidated ${t.consolidation.new_facts} fact(s)`:""}</div>`;
 
+// --- Spec 008 B: what a turn saved, drawn in the chat itself.
+//
+// Where "Open report" and a kept fact's link go. A report lives in Waku
+// Memory and waku.one renders it at /memories/<id>. Framed inside waku.one,
+// the link goes to the site that framed us (embed.js knows which, and only
+// answers an origin on its allowlist); everywhere else, to www.waku.one.
+const WAKU_ONE = "https://www.waku.one";
+function memoryUrl(id){
+  const framed = typeof embedParentOrigin === "function" ? embedParentOrigin() : null;
+  return (framed || WAKU_ONE) + "/memories/" + encodeURIComponent(id);
+}
+// The `report` event (spec 007 C): {title, memory_id, scope, summary}. The
+// summary is the report's own bullets, three at most.
+const reportCard = r => !r ? "" : `<div class="report-card">
+  <div class="report-kicker">Report saved</div>
+  <div class="report-title">${esc(r.title || "Research report")}</div>
+  ${(r.summary||[]).length ? `<ul class="mdlist">${r.summary.slice(0, 3).map(b => `<li>${esc(b)}</li>`).join("")}</ul>` : ""}
+  ${r.memory_id ? `<a class="btn btn-secondary btn-sm report-open" href="${esc(memoryUrl(r.memory_id))}" target="_blank" rel="noopener noreferrer">Open report</a>` : ""}
+</div>`;
+// A `consolidation` event's `kept` (spec 006): each fact this turn put in
+// memory, linked when Waku Memory gave it an id.
+const keptList = c => !(c && (c.kept||[]).length) ? "" : `<div class="kept">
+  <div class="report-kicker">Kept in memory</div>
+  <ul class="mdlist">${c.kept.map(k => `<li>${k.memory_id
+    ? `<a href="${esc(memoryUrl(k.memory_id))}" target="_blank" rel="noopener noreferrer">${esc(k.content)}</a>`
+    : esc(k.content)}</li>`).join("")}</ul>
+</div>`;
+
 const chatTurnCard = t => uiCard(`
   ${msgCopy(t.reply)}
   ${(t.gate||t.graph)?`${stagesRow(t, false)}
@@ -113,6 +141,8 @@ const chatTurnCard = t => uiCard(`
   ${nodesRow(t)}
   ${(t.tools||[]).length?`<div class="tele">${(t.tools||[]).map(toolRow).join("")}</div>`:""}
   <div class="r" style="margin-top:var(--space-2)">${renderMarkdown(t.reply)}</div>
+  ${reportCard(t.report)}
+  ${keptList(t.consolidation)}
   ${teleFooter(t)}`, {cls: "reply"});
 
 // While a turn runs we stream it live: stages light up as the harness reaches
@@ -135,6 +165,7 @@ const streamingCard = m => uiCard(`
   ${nodesRow(m)}
   ${m.gate&&m.gate.reason?`<div class="meta" style="margin:0 0 calc(var(--spacing) * 1.5)">${esc(m.gate.reason)}</div>`:""}
   ${(m.tools||[]).map(toolRow).join("")}
+  ${reportCard(m.report)}
   ${m.stream
      ? `<div class="r" style="margin-top:var(--space-2)">${renderMarkdown(m.stream)}<span class="caret"></span></div>`
      : `<div class="meta" style="margin:0">thinking&hellip;${m.started?` ${Math.round((Date.now()-m.started)/1000)}s`:""}${
@@ -152,7 +183,10 @@ const historicalCard = m => uiCard(`
 
 function renderChatLog(){
   if (!CHAT.length)
-    return `<div class="empty" style="padding:calc(var(--spacing) * 1.5) calc(var(--spacing) * 0.5)">Message Waku here from any tab. Open Overview to watch it flow through the harness, or the Gateway tab to see every channel's messages together.</div>`;
+    return `<div class="empty" style="padding:calc(var(--spacing) * 1.5) calc(var(--spacing) * 0.5)">${
+      document.body.classList.contains("embed")   // the embedded chat has no tabs to point at
+      ? "Message Waku here. Every tool call and reply shows as it runs."
+      : "Message Waku here from any tab. Open Overview to watch it flow through the harness, or the Gateway tab to see every channel's messages together."}</div>`;
   return CHAT.map(m => m.role==="user"
       ? `<div class="bubble">${esc(m.text)}</div>`
       : m.pending ? streamingCard(m)
@@ -186,7 +220,9 @@ function applyStreamEvent(pending, ev){
     (pending.nodes = pending.nodes || {})[ev.node] =
       {status: ev.error ? "error" : "done", ms: ev.ms};
   }
-  if (ev.kind === "gate") pending.gate = {decision: ev.decision, reason: ev.reason};
+  if (ev.kind === "report") pending.report = ev;
+  else if (ev.kind === "consolidation") pending.consolidation = ev;
+  else if (ev.kind === "gate") pending.gate = {decision: ev.decision, reason: ev.reason};
   else if (ev.kind === "route")
     pending.graph = {route: ev.target === "quick_reply" ? "quick" : "full",
                      reason: (pending.graph || {}).reason};
@@ -201,7 +237,9 @@ function applyStreamEvent(pending, ev){
   } else if (ev.kind === "done"){
     pending.pending = false; pending.stream = "";
     if (ev.error) pending.reply = "Error: " + ev.error;
-    else Object.assign(pending, ev);   // reply, tools, gate, iterations, latency_ms, consolidation
+    else Object.assign(pending, ev, {report: ev.report || pending.report,
+                                     consolidation: ev.consolidation || pending.consolidation});
+    // reply, tools, gate, iterations, latency_ms, consolidation, report
   }
 }
 
@@ -220,6 +258,12 @@ function autogrow(el){
   el.style.height = (el.scrollHeight + border) + "px";
 }
 
+// Who else hears a turn: every streamed event, then {kind: "turn_end"} once
+// the stream is over, whatever way it ended. Empty on the dashboard; the
+// embedded chat (embed.js) adds the one that tells waku.one.
+const turnWatchers = [];
+const tellWatchers = ev => turnWatchers.forEach(w => { try { w(ev); } catch(e){} });
+
 async function sendChat(fromInput){
   const input = fromInput || document.getElementById("msg") || document.getElementById("dmsg");
   const text = (input && input.value || "").trim();
@@ -235,6 +279,15 @@ async function sendChat(fromInput){
   try {
     const res = await fetch("/api/chat/stream", {method:"POST",
       headers:{"Content-Type":"application/json"}, body:JSON.stringify({message:text})});
+    noteStatus(res.status);
+    // A refusal that is not a stream (an ended session answers 401 with a
+    // JSON body) has no data: frames, so read its sentence instead of
+    // leaving an empty card.
+    if (!res.ok && !(res.headers.get("Content-Type") || "").startsWith("text/event-stream")){
+      let body = null;
+      try { body = await res.json(); } catch(e){ /* not JSON */ }
+      throw (body && body.error) || ("HTTP " + res.status);
+    }
     const reader = res.body.getReader(), dec = new TextDecoder();
     let buf = "";
     for (;;){
@@ -245,7 +298,11 @@ async function sendChat(fromInput){
       while ((i = buf.indexOf("\n\n")) >= 0){
         const line = buf.slice(0, i); buf = buf.slice(i + 2);
         if (!line.startsWith("data:")) continue;
-        try { applyStreamEvent(pending, JSON.parse(line.slice(5).trim())); } catch(e){}
+        try {
+          const ev = JSON.parse(line.slice(5).trim());
+          applyStreamEvent(pending, ev);
+          tellWatchers(ev);
+        } catch(e){}
         syncChatLogs();
       }
     }
@@ -253,6 +310,7 @@ async function sendChat(fromInput){
   clearInterval(ticker);
   if (pending.pending) pending.pending = false;   // stream ended without a 'done'
   syncChatLogs();
+  tellWatchers({kind: "turn_end"});
   input.focus();
   // "Paused. Send a message to wake it." — this IS that message, and the turn
   // above already woke the container. Nothing else pulls /api/data again, so
@@ -261,7 +319,10 @@ async function sendChat(fromInput){
   // life of the page. User-driven on purpose: no background header.
   if (paused) await refresh();
 }
-function wireDock(){
+// The composer alone: Send, Enter, autogrow. Shared by the dashboard's dock
+// (wireDock, below) and the embedded chat (embed.js), which has no dock to
+// open or close.
+function wireComposer(){
   const b = document.getElementById("dsend"), i = document.getElementById("dmsg");
   if (b) b.onclick = () => sendChat(i);
   // Enter sends; Shift+Enter is a real newline now that this is a textarea.
@@ -270,6 +331,9 @@ function wireDock(){
     if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); sendChat(i); }
   };
   if (i) i.oninput = () => autogrow(i);
+}
+function wireDock(){
+  wireComposer();
   const close = document.getElementById("dock-close"), reopen = document.getElementById("dock-reopen");
   const setClosed = v => { document.body.classList.toggle("dock-closed", v); localStorage.setItem("dockClosed", v?"1":"0"); };
   if (close) close.onclick = () => setClosed(true);

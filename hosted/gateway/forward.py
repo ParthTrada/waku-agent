@@ -34,7 +34,7 @@ from yarl import URL
 
 from hosted import log
 from hosted.core import idle, policy, quota
-from hosted.gateway import answers, guards
+from hosted.gateway import answers, embed, guards
 from hosted.gateway.launch import InMaintenance, Launcher, NotActive, StartFailed
 from hosted.gateway.proxy_client import Spend, read_spend
 from hosted.ports.control import Tenant
@@ -76,6 +76,11 @@ RESPONSE_HEADERS = ("Content-Type", "Content-Disposition", "Content-Encoding")
 # because Accept IS on this list and aiohttp's */* default is the right value
 # when the browser sent none.
 REQUEST_HEADERS = ("Content-Type", "Accept", policy.BACKGROUND_HEADER)
+# ONE MORE HEADER GOES IN, AND IT IS NEVER COPIED: embed.ORIGINS_HEADER, the
+# frame-ancestors allowlist the embed page is served with (spec 008 F). The
+# gateway leaves it on the request object for GET /embed/chat alone, and _send
+# writes it from there; a browser that sends its own copy is not heard, because
+# the name is not in the tuple above.
 SKIPPED_AUTO_HEADERS = ("User-Agent", "Accept-Encoding")
 
 METHODS_WITH_A_BODY = frozenset({"POST", "PUT", "PATCH"})
@@ -485,16 +490,25 @@ class ContainerForwarder:
         timeout = aiohttp.ClientTimeout(
             total=None if held else idle.FORWARD_TIMEOUT_SECONDS,
             sock_connect=CONNECT_TIMEOUT_SECONDS)
+        headers = self._request_headers(request, len(body))
+        # Set by Gateway._embed_page and by nothing else. The answer is marked
+        # framable HERE, before prepare(), because a streamed response's
+        # headers cannot change once they are on the wire.
+        origins = request.get(embed.REQUEST_ORIGINS_KEY)
+        if origins:
+            headers[embed.ORIGINS_HEADER] = " ".join(origins)
         downstream: web.StreamResponse | None = None
         try:
             async with self._session.request(
                     request.method, url,
-                    headers=self._request_headers(request, len(body)),
+                    headers=headers,
                     skip_auto_headers=SKIPPED_AUTO_HEADERS,
                     data=body or None, timeout=timeout,
                     allow_redirects=False) as upstream:
                 downstream = web.StreamResponse(status=upstream.status)
                 self._copy_response_headers(upstream, downstream)
+                if origins:
+                    answers.allow_framing(downstream, origins)
                 answers.harden(downstream)
                 await downstream.prepare(request)
                 async for chunk in upstream.content.iter_any():

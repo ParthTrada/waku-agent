@@ -177,6 +177,16 @@
   .btn.msg-copy{display:none;position:absolute;top:var(--space-2);right:var(--space-3);z-index:var(--z-inside)}
   .card:hover .msg-copy{display:block}
   .msg-copy.copied{color:var(--ok)}
+  /* Spec 008 B: what a turn saved to memory, inside its reply card. A quiet
+     inset, not a second card: the reply is the card, the report is its result. */
+  .report-card,.kept{margin-top:var(--space-3);padding:var(--space-2) var(--space-3);
+    border:var(--rule-width) solid var(--rule);border-radius:var(--radius);background:var(--surface-paper)}
+  .report-kicker{font-family:var(--face-mono);font-size:var(--text-xs);text-transform:uppercase;
+    letter-spacing:var(--tracking-label);color:var(--text-muted)}
+  .report-title{font-weight:var(--font-weight-medium);margin-top:calc(var(--spacing) * 0.5)}
+  .report-card .mdlist,.kept .mdlist{margin:var(--spacing) 0 var(--space-2);padding-left:var(--space-4)}
+  .report-open{display:inline-block;text-decoration:none}
+  .kept a{color:inherit}
   .meta{color:var(--text-faint);font-size:var(--text-xs);margin-top:var(--space-2);font-variant-numeric:tabular-nums}
   .tool{border:1px solid var(--rule);border-radius:var(--radius);padding:var(--space-2) var(--space-2);margin-top:var(--space-2);background:var(--surface-bg)}
   .tool.error{border-color:var(--bad);background:var(--surface-raised)}
@@ -923,3 +933,9 @@ dialog.dialog :focus-visible{outline:var(--focus-ring-width) solid var(--accent)
                    margin-bottom: var(--space-4) }
   .setup-note { color: var(--text-faint); font-size: var(--text-sm);
                 margin: var(--space-2) 0 0 }
+
+/* ---- The embedded chat (embed.html, spec 008) ------------------------------
+   The chat column alone, filling whatever frame waku.one gives it. Last in the
+   file so it wins over the dock's width clamp and the narrow-screen rule
+   that pins the dock over the page. */
+body.embed #dock{position:static;width:100%;height:100vh;border-left:none}

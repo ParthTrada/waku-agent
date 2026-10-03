@@ -375,6 +375,56 @@ curl https://agent.waku.one/v1/conversations \
   -H "Authorization: Bearer <the person's Supabase access token>"
 ```
 
+### The agent's own chat, in a frame
+
+waku.one shows the person's own chat, the dashboard's chat column and nothing
+else of the dashboard, in an iframe (spec 008). Its server asks for a one-time
+URL with the same bearer token and the same steps as `/v1/chat`:
+
+```bash
+curl https://agent.waku.one/v1/embed -X POST \
+  -H "Authorization: Bearer <the person's Supabase access token>" \
+  -H "Content-Type: application/json" -d '{}'
+# {"url": "https://<tenant>.agent.waku.one/auth/embed?code=<code>", "expires_at": 1791043260}
+```
+
+The page puts `url` in the iframe. The code is random, valid 60 seconds, works
+once and only on that tenant's host; it is held in the gateway's memory, so a
+restart costs waku.one one more call. `GET /auth/embed` must arrive as an
+iframe navigation (`Sec-Fetch-Dest: iframe`, or no fetch metadata); it sets
+`__Host-waku_embed` (`Secure; HttpOnly; SameSite=None; Partitioned`, 12 hours,
+stored in `control.db` like the other two sessions and ended by the same
+sign-out) and redirects to `/embed/chat`.
+
+A request carrying only that cookie reaches `/embed/chat`, `/static/`,
+`POST /api/chat/stream`, `GET` and `POST /api/session` (the chat's header reads
+`GET /api/session?action=state`), and `POST /api/providers` with a body that
+names a model and nothing else, which is the header's model picker. Everything
+else answers 403. The dashboard's own cookie is unaffected.
+
+Only `/embed/chat` and `/auth/embed` may be framed, and only by the origins in
+`WAKU_EMBED_ORIGINS`: they carry `Content-Security-Policy: frame-ancestors
+<origins>` and no `X-Frame-Options`; every other response keeps `DENY` and
+`frame-ancestors 'none'`. The name is optional in `config/gateway.env`; absent
+or empty it is `https://www.waku.one https://waku.one https://dev.waku.one`.
+To develop waku.one locally against this gateway, write the whole list with
+`http://localhost:3000` added and run `upgrade.sh`. A value that is not an
+origin (a path, a wildcard, a quote) stops the gateway at startup.
+
+When there is no session to show, both paths answer a short framable page
+instead of the sign-in page, which cannot be framed. Inside the frame the chat
+tells the page around it with `postMessage`, to the framing page's origin and
+only when that origin is on the allowlist, never `*`:
+
+| When | Message |
+|---|---|
+| a turn ends | `{"source": "waku-agent", "type": "turn-done", "credits_changed": true}` |
+| a report is saved | `{"source": "waku-agent", "type": "report-saved", "memory_id": "...", "title": "..."}` |
+| the session has ended | `{"source": "waku-agent", "type": "session-expired"}` |
+
+The framing origin is read from `document.referrer`, so the waku.one page must
+not send `Referrer-Policy: no-referrer`; without a referrer nothing is posted.
+
 ## The free tier
 
 With `--free-model` and `--platform-key-file`, every tenant can use Waku

@@ -138,6 +138,9 @@ or market research (one small-model question) and `global` otherwise. The
 chat reply becomes the sentences before the marker plus "Report saved", the
 turn emits a `report` event `{title, memory_id, scope, summary}` before
 `done`, and the chat log keeps the short reply with the card in its meta.
+The dashboard's chat draws that card (title, summary bullets, "Open report"
+to `/memories/<id>` on www.waku.one, or on the waku.one site framing it), and
+under it the facts a `consolidation` event says the turn kept (spec 008).
 Without Waku Memory, or when the send fails, the reply keeps the whole
 report and there is no event.
 
@@ -213,4 +216,9 @@ charges each call to the person's credits. A laptop reaches treg directly on
 the person's own account, once `waku connect treg` has signed them in (spec
 007). waku.one reads a person's chat history through the gateway's
 `/v1/conversations` routes, which forward to the container's own
-`/api/session`; the container keeps the one copy (spec 007).
+`/api/session`; the container keeps the one copy (spec 007). waku.one shows
+the agent's own chat by framing `/embed/chat`, the dashboard's chat column
+alone: `POST /v1/embed` gives it a one-time code, the code becomes an embed
+session that reaches only the chat's routes, and only the origins in the
+gateway's `WAKU_EMBED_ORIGINS` may frame the page (spec 008, and
+`hosted/README.md`).
