@@ -100,7 +100,7 @@ def chat_stream(message: str, emit) -> None:
     events: list[dict] = []
 
     def observer(kind, ev):
-        if kind in ("gate", "consolidation", "route", "triage", "slot"):
+        if kind in ("gate", "consolidation", "route", "triage", "slot", "report"):
             events.append({"kind": kind, **ev})
         emit(kind, ev)
 
@@ -116,6 +116,7 @@ def chat_stream(message: str, emit) -> None:
     route = next((e for e in events if e["kind"] == "route"), None)
     triage = next((e for e in events if e["kind"] == "triage"), None)
     slot = next((e for e in events if e["kind"] == "slot"), None)
+    report = next((e for e in events if e["kind"] == "report"), None)
     quick = bool(route) and route.get("target") == "quick_reply"
     emit("done", {
         "reply": result.reply,
@@ -131,6 +132,9 @@ def chat_stream(message: str, emit) -> None:
         # Spec 005: how many retrieved memories Jev let into the prompt.
         "slot": ({"kept": sum(1 for v in slot["verdicts"] if v["kept"]),
                   "total": len(slot["verdicts"])} if slot else None),
+        # Spec 007: the research report this turn saved to Waku Memory, for
+        # the chat's card. Also sent as its own `report` event, before this one.
+        "report": ({k: v for k, v in report.items() if k != "kind"} if report else None),
         "iterations": result.iterations,
         "latency_ms": latency_ms,
         # which brain answered — shown per card; a quick graph turn was the small model
