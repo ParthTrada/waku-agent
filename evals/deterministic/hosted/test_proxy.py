@@ -324,6 +324,8 @@ def test_the_platform_key_replaces_the_tenants_token_upstream():
 
     assert _run(go()) == 12
     assert seen[0]["x-api-key"] == "sk-ant-platform"
+    # The session does not decompress, so a gzipped answer would not parse.
+    assert {k.lower(): v for k, v in seen[0].items()}["accept-encoding"] == "identity"
 
 
 # --- spec 004 D: one wallet ----------------------------------------------------

@@ -30,6 +30,13 @@ class AnthropicUpstream:
         out = {"anthropic-version": API_VERSION, "content-type": "application/json"}
         out.update(headers or {})
         out["x-api-key"] = self._key      # last, so nothing forwarded can replace it
+        # The session does not decompress (__main__: auto_decompress=False), so
+        # the stream reaches the tenant byte for byte and _StreamUsage can read
+        # it. aiohttp still offers gzip by default, and Anthropic takes it:
+        # count_tokens then failed to decode byte 0x8b on every call (measured
+        # on agent.waku.one 2026-10-02) and a gzipped stream would pass through
+        # with no Content-Encoding the tenant could undo. Ask for plain bytes.
+        out["accept-encoding"] = "identity"
         return out
 
     async def count_tokens(self, body: dict) -> int:
