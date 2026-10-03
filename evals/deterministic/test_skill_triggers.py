@@ -98,6 +98,12 @@ MESSAGES = {
         "use the same memory in codex and grok bot",
         "export my waku skills to claude code",
     ],
+    "research-report": [
+        "research the competitors of mem0 and waku.one",
+        "research the market for AI note takers",
+        "compare the pricing of Notion and Coda",
+        "what funding have the competitors of muse.ai raised",
+    ],
 }
 
 
