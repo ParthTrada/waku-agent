@@ -329,12 +329,45 @@ function connectionCard(item){
     </div>`, {title: esc(item.name), cls: "provcard conncard"});
 }
 
-function connectionsGrid(items){
+// MCP servers that sign in on their own page (spec 007 E: treg). They are not
+// .env fields, so they are not in the registry and have no modal: the card
+// says where the server stands, and Connect sends `/connect <key>` through the
+// chat dock, the same door as typing it. The reply lands in the dock.
+const MCP_STATE_DISPLAY = {
+  connected: {label:"connected", className:"connected"},
+  not_signed_in: {label:"not signed in", className:"needs-setup"},
+  not_added: {label:"not added", className:"not-configured"},
+};
+
+function mcpConnectionCard(item){
+  const display = MCP_STATE_DISPLAY[item.state] || MCP_STATE_DISPLAY.not_added;
+  const why = item.detail ? `<div class="connwhy">${esc(item.detail)}</div>` : "";
+  const action = item.state === "connected" ? "" : `<div class="provactions connactions">
+      ${uiButton("Connect", {level: "secondary", onclick: `connectInChat('${esc(item.key)}')`})}
+    </div>`;
+  return uiCard(`
+    <img class="provlogo connlogo" src="/static/logos/connections/${esc(item.key)}.svg" alt="">
+    <div class="connstatus ${display.className}"><span class="conndot"></span>${esc(display.label)}</div>
+    ${why}
+    <div class="conndesc">${esc(item.what)}</div>
+    ${action}`, {title: esc(item.name), cls: "provcard conncard"});
+}
+
+function connectInChat(key){
+  const input = document.getElementById("dmsg");
+  if (!input) return;
+  document.body.classList.remove("dock-closed");
+  input.value = `/connect ${key}`;
+  sendChat(input);
+}
+
+function connectionsGrid(items, mcpItems = []){
   const grouped = Object.fromEntries(CONNECTION_GROUPS.map(group => [group, []]));
-  items.forEach(item => grouped[connectionDisplayGroup(item)].push(item));
+  items.forEach(item => grouped[connectionDisplayGroup(item)].push(connectionCard(item)));
+  mcpItems.forEach(item => grouped[connectionDisplayGroup(item)].push(mcpConnectionCard(item)));
   return CONNECTION_GROUPS.map(group => `<section class="connsection">
     <h2>${group}</h2>
-    <div class="provgrid conngrid">${grouped[group].map(connectionCard).join("")}</div>
+    <div class="provgrid conngrid">${grouped[group].join("")}</div>
   </section>`).join("");
 }
 
@@ -395,8 +428,9 @@ const VIEWS = {
     return modelsGrid(d);
   },
   connections(d){
-    const items = d.connections || [];
-    return items.length ? connectionsGrid(items) : uiCard(`<span class="empty">No integrations registered.</span>`);
+    const items = d.connections || [], mcpItems = d.mcp_connections || [];
+    return items.length || mcpItems.length ? connectionsGrid(items, mcpItems)
+      : uiCard(`<span class="empty">No integrations registered.</span>`);
   },
   // Gateway: ONE unified conversation across every channel (dashboard, telegram,
   // voice, cli) — the same loop + memory answer all of them. Each message is

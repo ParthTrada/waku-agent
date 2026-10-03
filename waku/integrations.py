@@ -492,6 +492,7 @@ def cli_main() -> int:
         load_settings,
         resolve_home,
     )
+    from waku.tools.treg import status as treg_status
     from waku.tools.waku_memory import status as waku_memory_status
 
     # Where this run keeps its memory, and which .env files supplied the keys.
@@ -506,6 +507,9 @@ def cli_main() -> int:
     # mcp.json with a sign-in token beside it, so its line comes from there.
     console.print("\n[bold]Shared memory[/bold]")
     console.print(f"  {'Waku Memory':<20} {waku_memory_status(load_settings().home)}", markup=False)
+    # treg the same way: an MCP server with a sign-in, not an .env field.
+    console.print("\n[bold]Live data[/bold]")
+    console.print(f"  {'treg':<20} {treg_status(load_settings().home)}", markup=False)
     return int(failed)
 
 

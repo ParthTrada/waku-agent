@@ -54,6 +54,7 @@ from waku.ops.catalog import list_models
 from waku.ops.pricing import price_for, usage_summary
 from waku.ops.settings_api import apply_settings, pin_action, settings_info
 from waku.ops.tracing import TraceEncodingError, iter_trace_lines
+from waku.tools import treg
 
 PORT = 7777
 # The frontend lives in its own files (static/index.html + style.css + app.js),
@@ -512,6 +513,9 @@ def collect() -> dict:
         "settings": info,
         "providers": [asdict(view) for view in list_providers()],
         "connections": [asdict(view) for view in list_connections()],
+        # MCP servers that sign in on their own page rather than through an
+        # .env field (spec 007 E). Files only: no browser, no network.
+        "mcp_connections": [treg.card(home)],
         "tools": tools_info(),
         "usage": usage_summary(home),
     }

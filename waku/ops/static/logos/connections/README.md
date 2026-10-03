@@ -15,5 +15,7 @@ a third-party CDN at runtime.
 - `typesafe.svg` is a neutral glyph drawn for this repository (a list with a
   check, for "Jev decides what to keep"), MIT like the rest of `waku/`. It is
   not TypeSafe's mark, which no icon set above carries.
+- `treg.svg` is a neutral glyph drawn for this repository (a globe, for "live
+  data from the web"), MIT like the rest of `waku/`. It is not treg's mark.
 
 Brand names and marks remain the property of their respective owners.

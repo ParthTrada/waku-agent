@@ -108,5 +108,9 @@ VIEWS.setup = function(d){
       machine and is read only when Waku calls that provider. Nothing here
       sends it anywhere else.</p>
     ${more}
+    <p class="setup-note">Optional, once Waku has a model: type
+      <code>/connect waku-memory</code> in the chat for one memory shared with
+      your other agents, and <code>/connect treg</code> for live data when it
+      researches. Each signs you in once in your browser.</p>
   `);
 };
