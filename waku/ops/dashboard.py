@@ -126,9 +126,15 @@ def chat_stream(message: str, emit) -> None:
         "graph": ({"workflow": route.get("workflow", "triage"),
                    "route": "quick" if quick else "full",
                    "reason": (triage or {}).get("reason", "")} if route else None),
+        # Spec 009 A: the Waku Memory searches run before a research turn come
+        # first, as the cards they were while the turn streamed.
         "tools": [{"tool": c["tool"], "args": c["args"], "output": c["output"],
                    "status": _tool_status(c["output"]),
-                   "summary": (c["output"] or "").split(". ")[0][:120]} for c in result.tool_calls],
+                   "summary": (c["output"] or "").split(". ")[0][:120],
+                   **({"read_first": True} if c.get("read_first") else {})}
+                  for c in [*getattr(result, "read_first", []), *result.tool_calls]],
+        # ... and what they found: the turn's Used list
+        "used": getattr(result, "used", []),
         "consolidation": ({"new_facts": cons["new_facts"], "kept": cons.get("kept", [])}
                           if cons else None),
         # Spec 005: how many retrieved memories Jev let into the prompt.

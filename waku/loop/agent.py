@@ -54,6 +54,13 @@ class LoopResult:
     reply: str
     tool_calls: list[LoopEvent] = field(default_factory=list)
     iterations: int = 0
+    # Spec 009 A: the Waku Memory searches the harness ran before the loop, on
+    # a research turn, and the memories they found (the turn's Used list).
+    # Kept apart from tool_calls on purpose: tool_calls are folded into the
+    # chat log, which consolidation reads, and memories already kept must not
+    # be proposed as new facts again.
+    read_first: list[LoopEvent] = field(default_factory=list)
+    used: list[dict] = field(default_factory=list)
 
 
 def run_loop(

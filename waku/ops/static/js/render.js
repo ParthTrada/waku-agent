@@ -9,15 +9,52 @@ const gateBadge = g => !g ? "" :
   uiBadge("gate · " + esc(g.decision), g.decision === "retrieve" ? "live" : "neutral")
   + `<span class="meta" style="margin:0">${esc(g.reason||"")}</span>`;
 
+// Spec 009 C: what a tool call cost and who served it, when its result says
+// so. treg's call answers with cost_usd and endpoint_id, through the hosted
+// relay too; a named provider wins over the endpoint's first segment
+// ("tomba.email.find" -> "tomba"). null for a call that names no cost.
+function toolCost(x){
+  if (!x) return null;
+  if (typeof x.cost_usd === "number")
+    return x.cost_usd >= 0 ? {usd: x.cost_usd, provider: x.provider || ""} : null;
+  let out = null;
+  try { out = JSON.parse(x.output); } catch(e){ return null; }
+  if (!out || typeof out !== "object" || typeof out.cost_usd !== "number" || !(out.cost_usd >= 0))
+    return null;
+  const args = x.args || {};
+  const endpoint = out.endpoint_id || out.endpoint || args.endpoint_id || args.endpoint || "";
+  const provider = (typeof out.provider === "string" && out.provider)
+    || String(endpoint).split(".")[0];
+  return {usd: out.cost_usd, provider};
+}
+// What a turn's tools cost together, or 0.
+const toolsCost = tools => (tools || []).reduce((sum, x) => sum + ((toolCost(x) || {}).usd || 0), 0);
+
+// A Waku Memory search answers with JSON, whose first "sentence" is no
+// summary; say how many memories it found instead.
+function toolSummary(x){
+  try {
+    const out = JSON.parse(x.output);
+    if (out && Array.isArray(out.entries))
+      return `${out.entries.length} ${out.entries.length === 1 ? "memory" : "memories"} found`
+        + (x.read_first ? ", read before the turn" : "");
+  } catch(e){ /* not JSON: the first sentence below */ }
+  return x.summary;
+}
+
 // A tool call renders as a status row (dot + one-line summary); the raw output
 // hides behind a disclosure so an ugly osascript error never floods the page.
-const toolRow = x => `<div class="tool ${x.status||"ok"}">
+const toolRow = x => {
+  const cost = toolCost(x), summary = toolSummary(x);
+  return `<div class="tool ${x.status||"ok"}">
   <div class="tool-head"><span class="dot ${x.status||"ok"}"></span><code>${esc(x.tool)}</code>
-    ${x.summary?`<span style="color:var(--text-muted)">${esc(x.summary)}</span>`:""}</div>
+    ${summary?`<span style="color:var(--text-muted)">${esc(summary)}</span>`:""}
+    ${cost?`<span class="tool-cost">${money(cost.usd)}${cost.provider?` · ${esc(cost.provider)}`:""}</span>`:""}</div>
   ${x.output!==undefined?`<details><summary>args &amp; raw output</summary>
     <pre>${esc(x.tool)}(${esc(JSON.stringify(x.args,null,1))})\n\n${esc(x.output)}</pre>
   </details>`:""}
 </div>`;
+};
 
 // A stored history row -> a CHAT item. Assistant rows with saved telemetry
 // (meta: gate/latency/iterations/tools) render as the FULL turn card, so a
@@ -26,7 +63,7 @@ const toolRow = x => `<div class="tool ${x.status||"ok"}">
 function histItem(m){
   if (m.role === "user") return {role:"user", text:m.content};
   if (m.meta) return {role:"waku", reply:m.content, gate:m.meta.gate, slot:m.meta.slot,
-                      graph:m.meta.graph, report:m.meta.report,
+                      graph:m.meta.graph, report:m.meta.report, used:m.meta.used,
                       tools:m.meta.tools, iterations:m.meta.iterations,
                       latency_ms:m.meta.latency_ms, model:m.meta.model};
   return {role:"waku", reply:m.content, historical:true};
@@ -101,9 +138,14 @@ function stagesRow(t, live){
   return `<div class="stages${live?"":" tele"}">`
     + graph + gate + tools + uiBadge("reply", replyVariant) + `</div>`;
 }
-// The per-turn telemetry footer: seconds · iterations · model · consolidation.
-const teleFooter = t => `<div class="meta tele">${secs(t.latency_ms)} · ${t.iterations??"?"} iter${
-  t.model?` · ${esc(t.model)}`:""}${t.consolidation?` · consolidated ${t.consolidation.new_facts} fact(s)`:""}</div>`;
+// The per-turn telemetry footer: seconds · iterations · model · what the
+// turn's tools cost (spec 009 C, when any said) · consolidation.
+const teleFooter = t => {
+  const spent = toolsCost(t.tools);
+  return `<div class="meta tele">${secs(t.latency_ms)} · ${t.iterations??"?"} iter${
+    t.model?` · ${esc(t.model)}`:""}${spent > 0 ? ` · tools ${money(spent)}` : ""}${
+    t.consolidation?` · consolidated ${t.consolidation.new_facts} fact(s)`:""}</div>`;
+};
 
 // --- Spec 008 B: what a turn saved, drawn in the chat itself.
 //
@@ -122,7 +164,32 @@ const reportCard = r => !r ? "" : `<div class="report-card">
   <div class="report-kicker">Report saved</div>
   <div class="report-title">${esc(r.title || "Research report")}</div>
   ${(r.summary||[]).length ? `<ul class="mdlist">${r.summary.slice(0, 3).map(b => `<li>${esc(b)}</li>`).join("")}</ul>` : ""}
-  ${r.memory_id ? `<a class="btn btn-secondary btn-sm report-open" href="${esc(memoryUrl(r.memory_id))}" target="_blank" rel="noopener noreferrer">Open report</a>` : ""}
+  ${r.memory_id ? `<a class="btn btn-secondary btn-sm report-open" href="${esc(memoryUrl(r.memory_id))}" target="_blank" rel="noopener noreferrer"
+     data-memory-id="${esc(r.memory_id)}" data-title="${esc(r.title || "")}" onclick="return openReport(this)">Open report</a>` : ""}
+</div>`;
+// Spec 040 M3 (waku-memory), the agent's half: framed inside waku.one,
+// "Open report" asks the page around us to open the report in place, with
+// embed.js's tellParent, which posts only to the allowlisted origin that
+// framed us (spec 008 F), never "*". Not framed, or framed by an origin off
+// the list: the link opens a new tab, as before.
+function openReport(link){
+  const framed = typeof embedParentOrigin === "function" && embedParentOrigin();
+  if (!framed || typeof tellParent !== "function") return true;
+  tellParent({type: "open-report", memory_id: link.dataset.memoryId || "",
+              title: link.dataset.title || ""});
+  return false;
+}
+// Spec 009 A: what the company brain already knew, read before a research
+// turn: each memory with the date it was saved, linked to waku.one.
+const usedList = used => !(used || []).length ? "" : `<div class="kept">
+  <div class="report-kicker">Used from memory</div>
+  <ul class="mdlist">${used.map(u => {
+    const label = (u.report ? `Report${u.title ? ` "${u.title}"` : ""}: ` : "") + (u.text || "");
+    const short = label.length > 160 ? label.slice(0, 159) + "\u2026" : label;
+    return `<li>${u.created_at ? `<span class="meta">${esc(u.created_at)}</span> ` : ""}${u.id
+      ? `<a href="${esc(memoryUrl(u.id))}" target="_blank" rel="noopener noreferrer">${esc(short)}</a>`
+      : esc(short)}</li>`;
+  }).join("")}</ul>
 </div>`;
 // A `consolidation` event's `kept` (spec 006): each fact this turn put in
 // memory, linked when Waku Memory gave it an id.
@@ -142,6 +209,7 @@ const chatTurnCard = t => uiCard(`
   ${(t.tools||[]).length?`<div class="tele">${(t.tools||[]).map(toolRow).join("")}</div>`:""}
   <div class="r" style="margin-top:var(--space-2)">${renderMarkdown(t.reply)}</div>
   ${reportCard(t.report)}
+  ${usedList(t.used)}
   ${keptList(t.consolidation)}
   ${teleFooter(t)}`, {cls: "reply"});
 
@@ -230,7 +298,7 @@ function applyStreamEvent(pending, ev){
   else if (ev.kind === "text") pending.stream = (pending.stream || "") + (ev.delta || "");
   else if (ev.kind === "tool"){
     (pending.tools = pending.tools || []).push({
-      tool: ev.tool, args: ev.args, output: ev.output,
+      tool: ev.tool, args: ev.args, output: ev.output, read_first: ev.read_first,
       status: (ev.output||"").toLowerCase().startsWith("error") ? "error" : "ok",
       summary: (ev.output || "").split(". ")[0].slice(0,120)});
     pending.stream = "";   // a new assistant turn begins after the tool result

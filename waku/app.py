@@ -10,11 +10,11 @@ from waku.config import Settings, load_settings
 from waku.db import connect
 from waku.loop.agent import LoopResult, Observer, run_loop
 from waku.loop.models import get_client
-from waku.memory import reports
+from waku.memory import brain, reports
 from waku.ops.tracing import Tracer, compose
 from waku.runtime.session import Session
 from waku.tools import build_registry
-from waku.tools.waku_memory import remember_via
+from waku.tools.waku_memory import remember_via, search_via
 
 
 class Waku:
@@ -35,6 +35,9 @@ class Waku:
         # Spec 006: with Waku Memory connected, every fact consolidation keeps
         # is sent there too. Without it this is None and nothing is sent.
         self.memory.remember = remember_via(self.mcp_bridge)
+        # Spec 009 A: a research turn searches Waku Memory before the model
+        # starts. None without Waku Memory, and then nothing is searched.
+        self.brain_search = search_via(self.mcp_bridge)
         self.session = Session(self.settings, memory=self.memory)
         self.tracer = Tracer(self.settings)
 
@@ -87,6 +90,7 @@ class Waku:
             # Spec 007: a reply holding a research report sends the report to
             # Waku Memory and keeps only its first sentences in the chat. No
             # Waku Memory, or a failed send, leaves the reply whole.
+            found = reports.find(result.reply)
             reply, report = reports.save(
                 result.reply, self.memory.remember,
                 lambda r: reports.is_company_research(self.client, self.settings.small_model, r))
@@ -110,7 +114,9 @@ class Waku:
                 "iterations": result.iterations,
                 "latency_ms": int((time.perf_counter() - t0) * 1000),
                 "tools": [{"tool": c["tool"], "status": _status(c["output"])}
-                          for c in result.tool_calls],
+                          for c in result.read_first + result.tool_calls],
+                # Spec 009 A: what the brain already knew, read before the turn
+                "used": result.used,
                 # which brain answered this turn — so a reopened thread (or a
                 # thread you switched models mid-way) shows it per card. A quick
                 # graph turn was answered by the small model; say so honestly.
@@ -122,7 +128,10 @@ class Waku:
             self.session.add_exchange(user_message, result.reply, tool_calls=result.tool_calls,
                                       source=source, meta=meta)
             if self.memory is not None:
-                self.memory.maybe_consolidate(notify=notify)
+                # Spec 009 B: a turn that saved a report keeps at most two
+                # facts, about the person; the findings stay in the report.
+                self.memory.maybe_consolidate(
+                    notify=notify, report=found.body if report is not None else "")
                 self.memory.export_markdown()   # keep MEMORY.md in sync
 
         self.tracer.end_turn(result.reply, result.iterations)
@@ -140,7 +149,18 @@ class Waku:
         window = self.settings.history_turns * 2
         messages = self.session.history[-window:] + [{"role": "user", "content": user_message}]
 
-        return run_loop(
+        # Spec 009 A: research starts from what the company brain already
+        # knows. The searches run here, before the model's first call, and
+        # are shown as tool calls; a failed search is skipped, never fatal.
+        known = brain.ReadFirst()
+        if self.brain_search is not None and brain.is_research(
+                self.memory.skills.match(user_message)):
+            known = brain.read_first(user_message, self.brain_search)
+            for call in known.calls:
+                notify("tool", call)
+            system += known.context
+
+        result = run_loop(
             client=self.client,
             model=self.settings.model,
             system=system,
@@ -151,6 +171,8 @@ class Waku:
             observer=notify,
             stream=stream,
         )
+        result.read_first, result.used = known.calls, known.used
+        return result
 
     def _respond_via_graph(self, user_message: str, notify, stream: bool) -> LoopResult | None:
         """One turn through the triage graph workflow. Returns None whenever

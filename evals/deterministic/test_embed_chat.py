@@ -284,3 +284,116 @@ def test_no_script_posts_to_star():
     for name, found in calls.items():
         for call in found:
             assert not re.search(r"""['"`]\*['"`]""", call), f"{name}: postMessage({call})"
+
+
+# --- spec 040 M3 (waku-memory), the agent's half: "Open report" in place -------------
+
+def _open_report(referrer: str, framed: bool) -> dict:
+    """Click "Open report" on a recorded card: what was posted, and whether
+    the link was left to open its tab (the handler's return value)."""
+    setup = {"files": CHAT_FILES, "referrer": referrer, "origins": DEFAULT,
+             "framed": framed, "events": [], "state": 200}
+    return _node(setup, f"""
+    vm.runInContext(`
+      function applyTheme(){{}} function currentTheme(){{ return "system"; }}
+      function syncModelChip(){{}} function applyTele(){{}}
+      async function loadThreadInto(){{ return null; }}`, ctx);
+    vm.runInContext(fs.readFileSync({json.dumps(str(JS / "embed.js"))}, "utf8"), ctx);
+    await new Promise(r => setTimeout(r, 0));
+    const card = vm.runInContext("reportCard", ctx)({json.dumps(DONE["report"])});
+    const link = {{dataset: {{memoryId: "mem-7f3a", title: "Mem0 competitors, 2026-10-03"}}}};
+    const openTab = vm.runInContext("openReport", ctx)(link);
+    console.log(JSON.stringify({{card, openTab, posts}}));""")
+
+
+@needs_node
+def test_framed_open_report_asks_the_allowlisted_parent_instead_of_a_tab():
+    got = _open_report("https://dev.waku.one/agent", framed=True)
+    assert got["openTab"] is False
+    assert got["posts"] == [{"message": {"source": "waku-agent", "type": "open-report",
+                                         "memory_id": "mem-7f3a",
+                                         "title": "Mem0 competitors, 2026-10-03"},
+                             "origin": "https://dev.waku.one"}]
+    assert 'onclick="return openReport(this)"' in got["card"]
+    assert 'data-memory-id="mem-7f3a"' in got["card"]
+
+
+@needs_node
+@pytest.mark.parametrize(("referrer", "framed"), [
+    ("https://evil.example/", True),
+    ("", True),
+    ("https://dev.waku.one/agent", False),
+], ids=["foreign-parent", "no-referrer", "not-framed"])
+def test_unframed_or_off_the_allowlist_open_report_opens_a_tab(referrer, framed):
+    got = _open_report(referrer, framed)
+    assert got["openTab"] is True and got["posts"] == []
+
+
+@needs_node
+def test_the_dashboard_without_embed_js_opens_a_tab():
+    got = _node({"files": CHAT_FILES, "referrer": "", "origins": DEFAULT, "framed": False,
+                 "events": [], "state": 200}, """
+    const openTab = vm.runInContext("openReport", ctx)({dataset: {memoryId: "m"}});
+    console.log(JSON.stringify({openTab, posts}));""")
+    assert got == {"openTab": True, "posts": []}
+
+
+# --- spec 009 C: what a tool call cost, on its card and in the turn's footer ----------
+
+TREG_TOOL = {"kind": "tool", "tool": "treg_catalog_call_read",
+             "args": {"endpoint_id": "tomba.email.find", "params": {"domain": "mem0.ai"}},
+             "output": json.dumps({"status": 200, "endpoint_id": "tomba.email.find",
+                                   "call_id": "call_1", "cost_usd": 0.0089, "body": {}})}
+NAMED_TOOL = {"kind": "tool", "tool": "treg_catalog_call_read", "args": {},
+              "output": json.dumps({"endpoint_id": "x.y", "provider": "PredictLeads",
+                                    "cost_usd": 0.6})}
+FREE_TOOL = {"kind": "tool", "tool": "list_events", "args": {}, "output": "No events today."}
+
+
+@needs_node
+def test_a_tool_card_shows_its_cost_and_provider_and_the_footer_the_total():
+    done = {**DONE, "tools": [{k: v for k, v in t.items() if k != "kind"}
+                              for t in (TREG_TOOL, NAMED_TOOL, FREE_TOOL)]}
+    got = _node({"files": CHAT_FILES, "referrer": "", "origins": DEFAULT, "framed": False,
+                 "events": [], "state": 200}, f"""
+    const pending = {{role: "waku", pending: true, stream: ""}};
+    vm.runInContext("applyStreamEvent", ctx)(pending, {json.dumps(TREG_TOOL)});
+    const live = vm.runInContext("streamingCard", ctx)(pending);
+    vm.runInContext("applyStreamEvent", ctx)(pending, {json.dumps(done)});
+    const card = vm.runInContext("chatTurnCard", ctx)(pending);
+    console.log(JSON.stringify({{live, card}}));""")
+    assert "$0.0089 · tomba" in got["live"], "the card shows the cost while the turn runs"
+    assert "$0.0089 · tomba" in got["card"]
+    assert "$0.60 · PredictLeads" in got["card"], "a named provider wins over the endpoint"
+    footer = got["card"][got["card"].rindex('<div class="meta tele">'):]
+    assert "0.9s" in footer and " · m · " in footer and "tools $0.61" in footer
+
+
+@needs_node
+def test_a_turn_with_no_priced_tool_shows_no_cost():
+    done = {**DONE, "tools": [{k: v for k, v in FREE_TOOL.items() if k != "kind"}]}
+    got = _node({"files": CHAT_FILES, "referrer": "", "origins": DEFAULT, "framed": False,
+                 "events": [], "state": 200}, f"""
+    const pending = {{role: "waku", pending: true, stream: ""}};
+    vm.runInContext("applyStreamEvent", ctx)(pending, {json.dumps(done)});
+    console.log(JSON.stringify({{card: vm.runInContext("chatTurnCard", ctx)(pending)}}));""")
+    assert "tool-cost" not in got["card"] and "tools $" not in got["card"]
+
+
+@needs_node
+def test_the_used_list_renders_what_the_brain_already_knew():
+    used = [{"id": "rep-0915", "text": "Zep and Letta sell hosted agent memory.",
+             "created_at": "2026-09-15", "kind": "semantic", "report": True,
+             "title": "Mem0 competitors, 2026-09-15"}]
+    done = {**DONE, "used": used}
+    got = _node({"files": CHAT_FILES, "referrer": "", "origins": DEFAULT, "framed": False,
+                 "events": [], "state": 200}, f"""
+    const pending = {{role: "waku", pending: true, stream: ""}};
+    vm.runInContext("applyStreamEvent", ctx)(pending, {json.dumps(done)});
+    const card = vm.runInContext("chatTurnCard", ctx)(pending);
+    const reopened = vm.runInContext("chatTurnCard", ctx)(vm.runInContext("histItem", ctx)(
+      {{role: "assistant", content: "ok", meta: {{used: {json.dumps(used)}}}}}));
+    console.log(JSON.stringify({{card, reopened}}));""")
+    assert "Used from memory" in got["card"] and "2026-09-15" in got["card"]
+    assert 'href="https://www.waku.one/memories/rep-0915"' in got["card"]
+    assert "Used from memory" in got["reopened"]
