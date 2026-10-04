@@ -9,7 +9,9 @@ is the shape the Waku Memory importer reads.
 Spec 006: once the server is connected, remember_via() gives consolidation a
 callable that sends each fact it keeps with memory.remember. Spec 007 sends a
 turn's research report through the same callable. Those are the only uploads,
-and they go to the server the person connected, with their sign-in.
+and they go to the server the person connected, with their sign-in. Spec 009:
+search_via() gives a research turn one read of memory.search before the model
+starts, so research begins from what the person's brain already holds.
 
 `waku connect waku-memory` (or `/connect waku-memory` in the dashboard chat)
 adds the server to WAKU_HOME/mcp.json next to any servers already there, then
@@ -32,14 +34,10 @@ DOCS = "https://www.waku.one/docs"
 RETIRED_HOSTS = ("d1o2fv4416yi84.cloudfront.net",)
 
 
-def remember_via(bridge):
-    """A remember(body, scope, kind=None) for consolidation and for research
-    reports, or None if Waku Memory is not connected. It returns the new memory's id and raises when the send
-    failed: the bridge reports a failure as text, which is not this JSON.
-
-    The server is the one named waku_memory or the one at URL; a person may
-    have added it by hand under another name.
-    """
+def _server(bridge) -> str | None:
+    """The connected Waku Memory server's name, or None. It is the one named
+    waku_memory or the one at URL; a person may have added it by hand under
+    another name."""
     if bridge is None:
         return None
     try:
@@ -48,7 +46,15 @@ def remember_via(bridge):
         return None
     names = [s.get("name") for s in servers if isinstance(s, dict)
              and (s.get("name") == NAME or s.get("url", "").rstrip("/") == URL)]
-    server = next((n for n in names if n and bridge.connected(n)), None)
+    return next((n for n in names if n and bridge.connected(n)), None)
+
+
+def remember_via(bridge):
+    """A remember(body, scope, kind=None) for consolidation and for research
+    reports, or None if Waku Memory is not connected. It returns the new memory's id and raises when the send
+    failed: the bridge reports a failure as text, which is not this JSON.
+    """
+    server = _server(bridge)
     if server is None:
         return None
 
@@ -66,6 +72,30 @@ def remember_via(bridge):
             raise RuntimeError(text[:200]) from None
 
     return remember
+
+
+def search_via(bridge):
+    """A search(args) for a research turn's read-first step (spec 009 A), or
+    None if Waku Memory is not connected. `args` are memory.search's own
+    (query, kind, scope, limit). It returns the server's answer as text, the
+    same text the model would see from waku_memory_memory_search, and raises
+    when that is not memory.search's JSON: the bridge reports a failure as text.
+    """
+    server = _server(bridge)
+    if server is None:
+        return None
+
+    def search(args: dict) -> str:
+        text = bridge.call(server, "memory.search", args)
+        try:
+            found = isinstance(json.loads(text)["entries"], list)
+        except (ValueError, KeyError, TypeError):
+            found = False
+        if not found:
+            raise RuntimeError(text[:200])
+        return text
+
+    return search
 
 
 def _has_mcp() -> bool:

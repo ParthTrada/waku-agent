@@ -142,6 +142,13 @@ PLATFORM_ENV_NAMES = (
 # tier's platform token.
 TREG_ENV_NAME = "WAKU_TREG_RELAY"
 
+# treg's tools the relay refuses (hosted/proxy/treg.py ALLOWED_TOOLS leaves
+# them out: they read the PLATFORM team's balance and resources). Named to the
+# tenant's waku as the model sees them, so its prompt says not to call them
+# (spec 009 E). In the container's environment, not in .env or SOUL.md, so an
+# existing tenant gets it on its next start too.
+TREG_UNAVAILABLE_TOOLS = ("treg_balance", "treg_resources_list")
+
 # What the provision container is told, and the only variable
 # provision_main.py reads: where the treg entry in mcp.json points.
 TREG_BASE_URL_ENV = "WAKU_TREG_BASE_URL"
@@ -268,6 +275,13 @@ def provision_env(config: SpawnerConfig) -> list[str]:
     return [f"{TREG_BASE_URL_ENV}={config.platform_base_url}"]
 
 
+def unavailable_tools_env(config: SpawnerConfig) -> list[str]:
+    """WAKU_UNAVAILABLE_TOOLS for a tenant with the treg relay, or nothing."""
+    if not config.treg_relay:
+        return []
+    return [f"WAKU_UNAVAILABLE_TOOLS={','.join(TREG_UNAVAILABLE_TOOLS)}"]
+
+
 def tenant_container(config: SpawnerConfig, *, tenant_id: str, project_id: int,
                      timezone: str, token: str, memory_key: str = "") -> dict:
     """The create body for one tenant's dashboard.
@@ -327,6 +341,9 @@ def tenant_container(config: SpawnerConfig, *, tenant_id: str, project_id: int,
             # waku_memory server through auth_env. Theirs, revocable on
             # waku.one, and present only once the gateway has minted it.
             *([f"WAKU_MEMORY_API_KEY={memory_key}"] if memory_key else []),
+            # treg's tools the relay refuses, so the model is told not to
+            # call them (spec 009 E). Only where the relay runs.
+            *unavailable_tools_env(config),
         ],
         "Labels": {LABEL_TENANT: tenant_id, LABEL_KIND: KIND_TENANT},
         "ExposedPorts": {f"{DASHBOARD_PORT}/tcp": {}},
