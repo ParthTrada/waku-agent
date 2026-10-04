@@ -11,12 +11,17 @@ A cheap model reads the unconsolidated chat log and produces:
 Spec 006: with Waku Memory connected, every fact it keeps is also sent there
 through `remember`, a callable app.py builds from the MCP connection. This
 module never sees the transport, so a fake stands in for it in the evals.
+
+Spec 009 B: when the exchanges saved a research report, the report holds the
+findings. Consolidation then keeps at most two facts, about the user or their
+decisions, and drops any fact whose subject the report is about.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable
 from datetime import date
 
@@ -47,6 +52,21 @@ Reply with ONLY this JSON:
 Exchanges:
 {log}"""
 
+# Spec 009 B: added to the prompt when these exchanges saved a research
+# report. One research turn used to keep 10 to 19 facts that repeated the
+# report saved beside them; the report is where findings live.
+REPORT_RULE = """
+These exchanges saved a research report, so its findings are already kept,
+in the report. Do NOT extract facts about the companies, products or markets
+it covers. Keep only facts about the user, their people, or a decision they
+made, at most {cap}, and set "company_research" to false.
+The report:
+{report}"""
+
+# The most loose facts a report turn keeps (spec 009 B), whatever the model
+# proposed.
+REPORT_TURN_MAX_FACTS = 2
+
 
 # Spec 006: the Waku Memory project company research is remembered in. The
 # one place the name lives; everything else is remembered in scope "global".
@@ -67,9 +87,11 @@ def consolidate_if_due(
     facts: SqliteFactStore,
     episodes: SqliteEpisodeStore,
     remember: Remember | None = None,
+    report: str = "",
 ) -> int:
     """Returns how many new facts were written (0 = not due or nothing worth keeping)."""
-    return len(kept_if_due(conn, client, small_model, every_n, facts, episodes, remember))
+    return len(kept_if_due(conn, client, small_model, every_n, facts, episodes, remember,
+                           report))
 
 
 def _send(remember: Remember, content: str, scope: str) -> tuple[bool, str | None]:
@@ -91,9 +113,14 @@ def kept_if_due(
     facts: SqliteFactStore,
     episodes: SqliteEpisodeStore,
     remember: Remember | None = None,
+    report: str = "",
 ) -> list[dict]:
     """The facts this consolidation kept, each as {subject, content, project,
     memory_id}. [] when it was not due or nothing was worth keeping.
+
+    `report` is the research report this turn saved. A batch whose rows saved
+    one earlier (a laptop consolidates every six exchanges) is a report batch
+    too, with that report's title and summary, which the chat log keeps.
 
     With `remember`, facts an earlier send failed on go first, then each kept
     fact once. Only the SQLite store records which are still unsent; with
@@ -102,7 +129,7 @@ def kept_if_due(
     per fact.
     """
     rows = conn.execute(
-        "SELECT id, role, content FROM chat_log WHERE consolidated = 0 ORDER BY id"
+        "SELECT id, role, content, meta FROM chat_log WHERE consolidated = 0 ORDER BY id"
     ).fetchall()
     if len(rows) < every_n * 2:  # each exchange = 2 rows (user + assistant)
         return []
@@ -117,6 +144,10 @@ def kept_if_due(
             facts.mark_synced(fact["id"])
 
     log = "\n".join(f"{r['role']}: {r['content']}" for r in rows)
+    report = "\n\n".join(p for p in (report, *_saved_reports(rows)) if p)
+    prompt = SUMMARIZER_PROMPT.format(log=log)
+    if report:
+        prompt += REPORT_RULE.format(cap=REPORT_TURN_MAX_FACTS, report=report)
     try:
         response = client.messages.create(
             model=small_model,
@@ -126,7 +157,7 @@ def kept_if_due(
             # gate) — 600 was measured truncating kimi-k2.6 to a thinking-only
             # reply (stop_reason=max_tokens, zero text blocks) on a 40-row backlog.
             max_tokens=4096,
-            messages=[{"role": "user", "content": SUMMARIZER_PROMPT.format(log=log)}],
+            messages=[{"role": "user", "content": prompt}],
         )
         text = "".join(b.text for b in response.content if b.type == "text")
         if "{" not in text:  # a reasoning-only / truncated reply, not a parse error
@@ -139,9 +170,14 @@ def kept_if_due(
                 if isinstance(f, dict) and f.get("subject") and f.get("content")]
     # Spec 005: Jev drops what no later answer would need. Off by default, and
     # it fails open, so without WAKU_SLOT_GATE=jev every proposed fact is kept.
+    if report:
+        proposed = [f for f in proposed if not _about_report(f, report)]
     kept = slot_gate.keep(proposed)
     # A model may answer the flag as "true"; anything else, or no flag, is personal.
     research = str(distilled.get("company_research")).lower() == "true"
+    if report:
+        # What is left is about the person, so it is theirs, not the company's.
+        kept, research = kept[:REPORT_TURN_MAX_FACTS], False
     project = COMPANY_PROJECT if research else None
     scope = f"project:{project}" if project else "global"
     out = []
@@ -167,3 +203,28 @@ def kept_if_due(
     )
     conn.commit()
     return out
+
+
+def _saved_reports(rows) -> list[str]:
+    """The title and summary of each report these rows saved (spec 007 C keeps
+    them in the assistant row's meta), one text per report."""
+    found = []
+    for row in rows:
+        try:
+            saved = (json.loads(row["meta"] or "null") or {}).get("report")
+        except (ValueError, TypeError, AttributeError):
+            continue
+        if isinstance(saved, dict) and saved.get("title"):
+            found.append("\n".join([f"# {saved['title']}",
+                                     *(f"- {b}" for b in saved.get("summary") or [])]))
+    return found
+
+
+def _about_report(fact: dict, report: str) -> bool:
+    """A fact whose subject the report names is a finding, and the report
+    already holds it: "Mem0" in a report on mem0's competitors."""
+    subject = " ".join(str(fact.get("subject", "")).split())
+    if len(subject) < 2:
+        return False
+    whole_word = r"(?<!\w)" + re.escape(subject) + r"(?!\w)"
+    return re.search(whole_word, " ".join(report.split()), re.IGNORECASE) is not None

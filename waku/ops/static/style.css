@@ -192,6 +192,8 @@
   .tool.error{border-color:var(--bad);background:var(--surface-raised)}
   .tool.warn{border-color:var(--rule-hard)}
   .tool-head{display:flex;align-items:center;gap:var(--space-2);font-size:var(--text-xs)}
+  /* Spec 009 C: what the call cost and who served it, at the row's end */
+  .tool-cost{margin-left:auto;color:var(--text-muted);font-variant-numeric:tabular-nums;white-space:nowrap}
   .dot{width:7px;height:7px;border-radius:var(--shape-circle);flex-shrink:0;background:var(--ok)}
   .dot.error{background:var(--bad)} .dot.warn{background:var(--warn)}
   .tool code{border:none;background:transparent;padding:0;color:var(--text-ink)}

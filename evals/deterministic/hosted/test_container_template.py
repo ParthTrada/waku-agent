@@ -722,3 +722,43 @@ def test_only_the_provision_container_is_told_where_treg_is(monkeypatch, tmp_pat
     tenant_env = template.tenant_container(config, tenant_id=TENANT, project_id=2,
                                            timezone="UTC", token=TOKEN)["Env"]
     assert not [line for line in tenant_env if "TREG" in line]
+
+
+# --- spec 009 E: no refused calls -------------------------------------------------
+
+
+def test_a_tenant_with_the_treg_relay_is_told_balance_and_resources_list_are_unavailable(
+        tmp_path):
+    """The relay refuses treg's balance and resources_list (hosted/proxy/treg.py
+    ALLOWED_TOOLS), so a hosted container's instructions say so. The line is
+    in the container's environment, which every start sets, so a tenant
+    provisioned before this spec gets it too; their SOUL.md is never rewritten."""
+    import dataclasses
+
+    from hosted.proxy.treg import ALLOWED_TOOLS
+    from waku.config import Settings
+    from waku.runtime.session import Session
+
+    on = dataclasses.replace(CONFIG, treg_relay=True)
+    env = template.tenant_container(on, tenant_id=TENANT, project_id=2,
+                                    timezone="UTC", token=TOKEN)["Env"]
+    line = next(e for e in env if e.startswith("WAKU_UNAVAILABLE_TOOLS="))
+    tools = tuple(line.split("=", 1)[1].split(","))
+    assert tools == ("treg_balance", "treg_resources_list")
+    # what is named unavailable is exactly what the relay refuses
+    assert not {t.removeprefix("treg_") for t in tools} & ALLOWED_TOOLS
+
+    settings = Settings(home=tmp_path, unavailable_tools=tools)
+    settings.ensure_home()
+    system = Session(settings).build_system("research mem0")
+    assert "Not available here, so never call them: treg_balance, treg_resources_list." in system
+
+
+def test_without_the_relay_nothing_is_named_unavailable(tmp_path):
+    from waku.config import Settings
+    from waku.runtime.session import Session
+
+    assert not [e for e in _tenant_body()["Env"] if e.startswith("WAKU_UNAVAILABLE_TOOLS=")]
+    settings = Settings(home=tmp_path)
+    settings.ensure_home()
+    assert "Not available here" not in Session(settings).build_system("hello")

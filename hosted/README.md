@@ -421,6 +421,11 @@ only when that origin is on the allowlist, never `*`:
 | a turn ends | `{"source": "waku-agent", "type": "turn-done", "credits_changed": true}` |
 | a report is saved | `{"source": "waku-agent", "type": "report-saved", "memory_id": "...", "title": "..."}` |
 | the session has ended | `{"source": "waku-agent", "type": "session-expired"}` |
+| the person clicks "Open report" | `{"source": "waku-agent", "type": "open-report", "memory_id": "...", "title": "..."}` |
+
+"Open report" opens no tab while framed: waku.one opens the report in place
+(waku-memory spec 040 M3). Not framed, or framed by an origin off the list, it
+opens `/memories/<id>` in a new tab as before.
 
 The framing origin is read from `document.referrer`, so the waku.one page must
 not send `Referrer-Policy: no-referrer`; without a referrer nothing is posted.
@@ -558,6 +563,14 @@ comes back, and the charge appears in that person's waku.one usage.
 **Turning it off** is `WAKU_TREG_TOKEN=` empty and `upgrade.sh`. The relay
 answers 404 at once; the `treg` entries already in tenants' `mcp.json` stay,
 because provisioning only ever adds, and show as a server that cannot connect.
+
+**Tools the relay refuses are named to the model.** treg's `balance` and
+`resources_list` read the platform team's own account, so the relay refuses
+them. With `WAKU_TREG_RELAY=on` every tenant container starts with
+`WAKU_UNAVAILABLE_TOOLS=treg_balance,treg_resources_list`, and the agent's
+instructions say not to call them (spec 009 E). It is in the container's
+environment, not in `SOUL.md`, so a tenant provisioned earlier gets it on its
+next start.
 
 ### A second fence: treg's per-customer daily budget
 

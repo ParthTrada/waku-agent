@@ -163,6 +163,12 @@ class Settings:
     # gate when relevant. Without this cap a long thread (esp. the always-on
     # Telegram session) resends its whole history every turn until it explodes.
     history_turns: int = field(default_factory=lambda: int(os.getenv("WAKU_HISTORY_TURNS", "12")))
+    # Tools a deployment does not offer, comma-separated as the model names
+    # them (<server>_<tool> for MCP). The system prompt says not to call them.
+    # Empty on a laptop; a hosted container is started with treg's balance and
+    # resources_list here, which the relay refuses by design (spec 009 E).
+    unavailable_tools: tuple[str, ...] = field(default_factory=lambda: tuple(
+        t.strip() for t in os.getenv("WAKU_UNAVAILABLE_TOOLS", "").split(",") if t.strip()))
 
     # --- Memory
     # Consolidate (distill chats into durable facts) only after N new exchanges.

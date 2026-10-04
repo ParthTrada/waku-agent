@@ -144,6 +144,34 @@ under it the facts a `consolidation` event says the turn kept (spec 008).
 Without Waku Memory, or when the send fails, the reply keeps the whole
 report and there is no event.
 
+### Research reads the company brain first
+
+A turn is research when the `research-report` skill matches its message. With
+Waku Memory connected, `waku/memory/brain.py` runs `memory.search` twice before
+the model's first call (spec 009): once for the subject (the message without
+words like "research" and "the"), in every scope, and once for earlier
+reports, kind `semantic`. The hits go into the system prompt under "What the
+company brain already knows", each with its date and id, reports first, and
+the skill says to start there, name the earlier report and its date, and
+research only what is missing or older than 30 days. Each search is shown as
+a `waku_memory_memory_search` tool call (waku.one reads its `entries` as
+Used), the `done` payload and the turn's meta carry them as `used`, and the
+dashboard's chat lists them under "Used from memory". The searches are not
+folded into the chat log, so consolidation never proposes memories already
+kept. A failed search is logged and skipped; the turn goes on without it.
+
+A turn that saved a report consolidates with it (spec 009 B): the summariser
+is told the findings are in the report, a fact whose subject the report names
+is dropped, and at most two facts are kept, as the person's own (scope
+`global`). A laptop batch that holds an earlier report turn reads that report's
+title and summary from the chat log's meta.
+
+Each tool card shows `cost_usd` and the provider when the result carries them
+(treg's call, through the hosted relay too), and the turn footer shows the
+turn's total tool cost. `WAKU_UNAVAILABLE_TOOLS` names tools a deployment does
+not offer, and the system prompt says not to call them; hosted containers set
+it to treg's `balance` and `resources_list`, which the relay refuses.
+
 ## Which file is which
 
 - `waku/gateway/` — how text gets in and out: `cli.py`, `voice.py` (wake word),
@@ -162,8 +190,9 @@ report and there is no event.
   `registry.py` decides which are on.
 - `waku/memory/` — semantic (FTS5), episodic and procedural (SKILL.md) memory,
   plus `retrieval_gate.py` (hero 1: does this turn need memory?) and
-  `consolidation.py` (every N exchanges) and `reports.py` (a research report
-  goes to Waku Memory whole).
+  `consolidation.py` (every N exchanges), `reports.py` (a research report
+  goes to Waku Memory whole) and `brain.py` (a research turn reads Waku Memory
+  first).
 - `waku/ops/` — tracing (JSONL + OTel), the dashboard (localhost:7777),
   `release_gate.py`, and `compare_history.py` (the Compare arena's own JSONL
   scoreboard, never `state.db`).
